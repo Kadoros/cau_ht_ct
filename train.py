@@ -197,7 +197,8 @@ def pretrain(
     )
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
+    T_max = min(epochs, 120)  # 120 이상 늘려도 lr 스케줄은 120 기준 고정
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=T_max)
     criterion = nn.CrossEntropyLoss(label_smoothing=0.05)
 
     model.train()
@@ -649,7 +650,7 @@ def parse_args():
     parser.add_argument("--device", default=_default_device)
     parser.add_argument("--pretrain_epochs", type=int, default=60)
     parser.add_argument("--meta_epochs", type=int, default=40)
-    parser.add_argument("--finetune_epochs", type=int, default=150)
+    parser.add_argument("--finetune_epochs", type=int, default=120)
     parser.add_argument(
         "--lambda_val", type=float, default=0.05, help="L2-SP regularization weight"
     )
