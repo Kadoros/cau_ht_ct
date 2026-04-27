@@ -1,0 +1,4 @@
+index,bladder,femur-left,femur-right,heart,kidney-left,kidney-right,liver,lung-left,lung-right,pancreas,spleen
+image_00000,0,0,0,0,0,0,0,0,0,0,1
+image_00001,0,0,0,0,0,0,0,0,1,0,0
+image_00002,0,0,0,0,0,0,0,0,0,0,1

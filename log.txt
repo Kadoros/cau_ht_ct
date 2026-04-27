@@ -1,0 +1,79 @@
+========================================
+해커톤 학습 로그 (Training Log)
+========================================
+
+[환경]
+OS       : Ubuntu 22.04 LTS (평가서버) / macOS 개발환경
+Python   : 3.10.x
+PyTorch  : 2.1.x
+CUDA     : 12.1
+
+[모델 구조]
+Architecture  : HybridFNONet (FNO + Spatial Encoder)
+Parameters    : 275,499
+Channels      : 32
+FNO Modes     : 8
+Normalization : GroupNorm (num_groups=8)
+Classes       : 11
+
+[학습 파이프라인]
+Step 1 - Pre-training (A+C)
+  - Epochs      : 40
+  - Batch size  : 64
+  - Optimizer   : AdamW (lr=1e-3, weight_decay=1e-4)
+  - Loss        : CrossEntropyLoss (label_smoothing=0.05)
+  - Scheduler   : CosineAnnealingLR
+  - Best loss   : 0.4579
+  - Final acc   : 96.3%
+
+Step 2 - FOMAML Meta-training (A+C)
+  - Meta epochs : 30
+  - Inner lr    : 0.05
+  - Inner steps : 3
+  - Tasks/epoch : 4
+  - Final query loss: 2.4652
+
+Step 3 - Fine-tuning on Sagittal (L2-SP)
+  - Epochs      : 60
+  - Batch size  : 32
+  - Optimizer   : AdamW (lr=5e-4)
+  - Lambda (L2-SP): 0.1
+  - Val ratio   : 0.15
+  - Best val acc: 69.7%
+
+[전처리]
+- Resize: 28x28
+- Normalize: mean=0.5, std=0.5  → [-1, 1] 범위
+
+[학습 결과 (train set 기준)]
+  F1 Axial    (A): 0.9444
+  F1 Coronal  (C): 0.9275
+  F1 Sagittal (S): 0.7637
+  Final Score    : 0.8154  (0.7×S + 0.3×(A+C)/2)
+
+[데이터 해시값]
+train_folder_hash : (아래 명령어로 생성 후 기입)
+model_weight_hash : (아래 명령어로 생성 후 기입)
+
+※ 해시값 생성 방법:
+import hashlib, os
+def get_official_hash(folder_path):
+    file_hashes = []
+    for root, dirs, files in os.walk(folder_path):
+        for file in sorted(files):
+            if file.startswith('.'): continue
+            file_path = os.path.join(root, file)
+            hasher = hashlib.md5()
+            with open(file_path, 'rb') as f:
+                for chunk in iter(lambda: f.read(4096), b""):
+                    hasher.update(chunk)
+            file_hashes.append(hasher.hexdigest().upper())
+    combined = "".join(file_hashes)
+    return hashlib.md5(combined.encode()).hexdigest().upper()
+
+print(get_official_hash('./train'))
+print(get_official_hash('./best_model.pth'))
+
+[외부 데이터 / 사전학습 가중치]
+사용 없음. Random initialization에서 시작.
+제공된 train 데이터(axial/coronal/sagittal)만 사용.

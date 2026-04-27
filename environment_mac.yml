@@ -1,0 +1,13 @@
+name: med_hackathon_mac
+channels:
+  - pytorch
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - pytorch=2.1.2
+  - torchvision=0.16.2
+  - numpy<2
+  - pandas
+  - scikit-learn
+  - nibabel
