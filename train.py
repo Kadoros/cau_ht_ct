@@ -33,7 +33,6 @@ from torch.utils.data import Dataset, DataLoader, random_split
 
 from model import build_model
 
-
 # ══════════════════════════════════════════════════════════
 # 0. Dataset & Augmentation
 # ══════════════════════════════════════════════════════════
@@ -137,21 +136,24 @@ class MedDataset(Dataset):
 
     def _augment(self, img):
         """Lightweight augmentation safe for medical images."""
+        # 1. 기하학적 변환
         if torch.rand(1) < 0.3:
-            img = torch.flip(img, dims=[2])
+            img = torch.flip(img, dims=[2])  # 가로 반전
 
-        if torch.rand(1) < 0.5:
-            angle = (torch.rand(1).item() - 0.5) * 20
+        if torch.rand(1) < 0.5:  # 회전 강화
+            angle = (torch.rand(1).item() - 0.5) * 30
             img = _rotate_tensor(img, angle)
 
-        if torch.rand(1) < 0.4:
-            img = img + torch.randn_like(img) * 0.02
-            img = img.clamp(0, 1)
+        # 2. 강도(Intensity) 변환 - 새로운 환자 적응 핵심
+        if torch.rand(1) < 0.5:
+            # 밝기 및 대비 무작위 변경
+            alpha = 0.7 + torch.rand(1).item() * 0.6  # 0.7 ~ 1.3
+            beta = (torch.rand(1).item() - 0.5) * 0.2  # -0.1 ~ 0.1
+            img = (img * alpha + beta).clamp(-1, 1)
 
-        if torch.rand(1) < 0.4:
-            alpha = 0.8 + torch.rand(1).item() * 0.4
-            beta = (torch.rand(1).item() - 0.5) * 0.1
-            img = (img * alpha + beta).clamp(0, 1)
+        if torch.rand(1) < 0.3:
+            # 가우시안 노이즈 추가
+            img = img + torch.randn_like(img) * 0.03
 
         return img
 
@@ -648,9 +650,9 @@ def parse_args():
     else:
         _default_device = "cpu"
     parser.add_argument("--device", default=_default_device)
-    parser.add_argument("--pretrain_epochs", type=int, default=60)
-    parser.add_argument("--meta_epochs", type=int, default=40)
-    parser.add_argument("--finetune_epochs", type=int, default=120)
+    parser.add_argument("--pretrain_epochs", type=int, default=100)
+    parser.add_argument("--meta_epochs", type=int, default=60)
+    parser.add_argument("--finetune_epochs", type=int, default=200)
     parser.add_argument(
         "--lambda_val", type=float, default=0.05, help="L2-SP regularization weight"
     )

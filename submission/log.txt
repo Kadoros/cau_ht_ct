@@ -53,7 +53,7 @@ Step 3 - Fine-tuning on Sagittal (L2-SP)
 
 [데이터 해시값]
 train_folder_hash : 2100A696FED330AB604EEAC917ED10C7
-model_weight_hash : 691EB9FB90A3E3F84FCAC5186EE4B38C
+model_weight_hash : D41D8CD98F00B204E9800998ECF8427E
 
 ※ 해시값 생성 방법:
 import hashlib, os

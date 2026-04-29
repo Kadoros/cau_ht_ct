@@ -116,7 +116,7 @@ class HybridFNONet(nn.Module):
       - modes=8 (fast enough, still captures geometry at 28x28)
     """
 
-    def __init__(self, num_classes=11, channels=32, modes=8):
+    def __init__(self, num_classes=11, channels=64, modes=12):
         super().__init__()
         self.channels = channels
 
@@ -142,7 +142,7 @@ class HybridFNONet(nn.Module):
         self.classifier = nn.Sequential(
             nn.Linear(channels, channels),
             nn.GELU(),
-            nn.Dropout(0.3),
+            nn.Dropout(0.4),
             nn.Linear(channels, num_classes),
         )
 
@@ -165,6 +165,6 @@ class HybridFNONet(nn.Module):
         return x.mean(dim=[2, 3])
 
 
-def build_model(num_classes=11, channels=32, modes=8):
+def build_model(num_classes=11, channels=64, modes=12):
     model = HybridFNONet(num_classes=num_classes, channels=channels, modes=modes)
     return model
