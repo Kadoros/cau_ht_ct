@@ -1,93 +1,70 @@
-"""
-model.py
-Hybrid Spectral-Spatial Encoder for 28x28 grayscale CT images.
-- FNO (Fourier Neural Operator) blocks for geometry/topology learning
-- GroupNorm instead of BatchNorm (safe for few-shot fine-tuning)
-- 11-class organ classification
-"""
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 
-# ──────────────────────────────────────────────
-# Spectral Convolution (Fourier Layer)
-# ──────────────────────────────────────────────
 class SpectralConv2d(nn.Module):
-    """
-    2D Fourier layer: FFT -> linear transform in freq domain -> IFFT
-    modes: number of Fourier modes to keep (low-freq = geometric info)
-    """
-
     def __init__(self, in_channels, out_channels, modes):
         super().__init__()
         self.in_channels = in_channels
         self.out_channels = out_channels
-        self.modes = modes  # how many freq modes to keep
-
-        # Complex weights for 4 quadrant combinations
+        self.modes = modes
         scale = 1 / (in_channels * out_channels)
-        self.weights_real = nn.Parameter(
+
+        # ⚠️ MPS 에러 방지: 복소수 파라미터 대신 실수부/허수부 파라미터로 분리하여 생성
+        self.w1_re = nn.Parameter(
             scale * torch.randn(in_channels, out_channels, modes, modes)
         )
-        self.weights_imag = nn.Parameter(
+        self.w1_im = nn.Parameter(
+            scale * torch.randn(in_channels, out_channels, modes, modes)
+        )
+        self.w2_re = nn.Parameter(
+            scale * torch.randn(in_channels, out_channels, modes, modes)
+        )
+        self.w2_im = nn.Parameter(
             scale * torch.randn(in_channels, out_channels, modes, modes)
         )
 
-    def complex_mul2d(self, x_ft, weights_real, weights_imag):
-        # x_ft: (B, C_in, H, W//2+1) complex
-        # weights: (C_in, C_out, modes, modes)
-        w = torch.complex(weights_real, weights_imag)  # (Cin, Cout, m, m)
-        # einsum: batch × in_ch × h × w -> batch × out_ch × h × w
-        return torch.einsum("bixy,ioxy->boxy", x_ft, w)
+    def complex_mul2d(self, x, w_re, w_im):
+        # (B, C, H, W) 복소수 연산을 실수 연산으로 분해해서 수행
+        # (a + bi)(c + di) = (ac - bd) + (ad + bc)i
+        res_re = torch.einsum("bixy,ioxy->boxy", x.real, w_re) - torch.einsum(
+            "bixy,ioxy->boxy", x.imag, w_im
+        )
+        res_im = torch.einsum("bixy,ioxy->boxy", x.real, w_im) + torch.einsum(
+            "bixy,ioxy->boxy", x.imag, w_re
+        )
+        return torch.complex(res_re, res_im)
 
     def forward(self, x):
         B, C, H, W = x.shape
-
-        # MPS (Apple Silicon)는 complex tensor / FFT 미지원
-        # → FFT 연산만 CPU로 내렸다가 결과를 원래 device로 복귀
         orig_device = x.device
-        is_mps = str(orig_device).startswith("mps")
-        if is_mps:
-            x = x.cpu()
-            wr = self.weights_real.cpu()
-            wi = self.weights_imag.cpu()
-            fft_device = torch.device("cpu")
-        else:
-            wr, wi = self.weights_real, self.weights_imag
-            fft_device = orig_device
 
-        # FFT
-        x_ft = torch.fft.rfft2(x, norm="ortho")
+        # ── FFT 연산 ──
+        # MPS는 Complex 타입을 지원하지 않으므로 무조건 CPU로 옮겨서 연산
+        x_cpu = x.cpu()
+        x_ft = torch.fft.rfft2(x_cpu, norm="ortho")
 
-        # Allocate output in freq domain
-        out_ft = torch.zeros(
-            B, self.out_channels, H, W // 2 + 1, dtype=torch.cfloat, device=fft_device
+        out_ft = torch.zeros(B, self.out_channels, H, W // 2 + 1, dtype=torch.cfloat)
+
+        m = self.modes
+        # 가중치를 복소수로 결합 (CPU에서 연산)
+        w1 = torch.complex(self.w1_re.cpu(), self.w1_im.cpu())
+        w2 = torch.complex(self.w2_re.cpu(), self.w2_im.cpu())
+
+        out_ft[:, :, :m, :m] = self.complex_mul2d(x_ft[:, :, :m, :m], w1.real, w1.imag)
+        out_ft[:, :, -m:, :m] = self.complex_mul2d(
+            x_ft[:, :, -m:, :m], w2.real, w2.imag
         )
 
-        # Apply learned weights to low-freq modes only
-        m = self.modes
-        out_ft[:, :, :m, :m] = self.complex_mul2d(x_ft[:, :, :m, :m], wr, wi)
-
-        # IFFT back to spatial domain
+        # ── IFFT 연산 ──
         x_out = torch.fft.irfft2(out_ft, s=(H, W), norm="ortho")
 
-        # 원래 device로 복귀
+        # 결과를 다시 원래 장치(MPS)로 복귀
         return x_out.to(orig_device)
 
 
-# ──────────────────────────────────────────────
-# FNO Block
-# ──────────────────────────────────────────────
 class FNOBlock(nn.Module):
-    """
-    Single FNO block:
-      Spectral path  (Fourier conv)
-    + Spatial path   (1x1 conv bypass)
-    -> GroupNorm -> GELU
-    """
-
     def __init__(self, channels, modes):
         super().__init__()
         self.spectral = SpectralConv2d(channels, channels, modes)
@@ -98,47 +75,21 @@ class FNOBlock(nn.Module):
         return F.gelu(self.norm(self.spectral(x) + self.bypass(x)))
 
 
-# ──────────────────────────────────────────────
-# Main Model
-# ──────────────────────────────────────────────
 class HybridFNONet(nn.Module):
-    """
-    Architecture:
-      Lifting Conv (1 -> 32 channels)
-      FNO Block x2
-      Spatial refinement (3x3 conv)
-      Global Average Pooling
-      Classifier (32 -> 11)
-
-    Design choices:
-      - 32 channels (not 64) to reduce overfitting on 50-shot data
-      - GroupNorm everywhere (safe for small batch / fine-tuning)
-      - modes=8 (fast enough, still captures geometry at 28x28)
-    """
-
     def __init__(self, num_classes=11, channels=64, modes=12):
         super().__init__()
-        self.channels = channels
-
-        # ── Lifting: 1 -> channels ──
         self.lifting = nn.Sequential(
             nn.Conv2d(1, channels, kernel_size=3, padding=1),
             nn.GroupNorm(num_groups=8, num_channels=channels),
             nn.GELU(),
         )
-
-        # ── FNO Blocks ──
         self.fno1 = FNOBlock(channels, modes)
         self.fno2 = FNOBlock(channels, modes)
-
-        # ── Spatial refinement ──
         self.spatial_refine = nn.Sequential(
             nn.Conv2d(channels, channels, kernel_size=3, padding=1),
             nn.GroupNorm(num_groups=8, num_channels=channels),
             nn.GELU(),
         )
-
-        # ── Classifier ──
         self.classifier = nn.Sequential(
             nn.Linear(channels, channels),
             nn.GELU(),
@@ -147,24 +98,13 @@ class HybridFNONet(nn.Module):
         )
 
     def forward(self, x):
-        # x: (B, 1, 28, 28)
-        x = self.lifting(x)  # (B, C, 28, 28)
-        x = self.fno1(x)
-        x = self.fno2(x)
-        x = self.spatial_refine(x)
-        x = x.mean(dim=[2, 3])  # Global Average Pooling -> (B, C)
-        x = self.classifier(x)  # (B, 11)
-        return x
-
-    def get_feature(self, x):
-        """Return embedding before classifier (for analysis)."""
         x = self.lifting(x)
         x = self.fno1(x)
         x = self.fno2(x)
         x = self.spatial_refine(x)
-        return x.mean(dim=[2, 3])
+        x = x.mean(dim=[2, 3])
+        return self.classifier(x)
 
 
 def build_model(num_classes=11, channels=64, modes=12):
-    model = HybridFNONet(num_classes=num_classes, channels=channels, modes=modes)
-    return model
+    return HybridFNONet(num_classes, channels, modes)
