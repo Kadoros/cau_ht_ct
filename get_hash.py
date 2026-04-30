@@ -38,6 +38,9 @@ def get_official_hash(path):
 print("train 폴더 해시:", get_official_hash("./train"))
 print(
     "Aggressive 모델 해시:",
-    get_official_hash("/Users/kadoros1130/WS/1_CAU/HKT/CT/sub_v3/model.pth"),
+    get_official_hash("/Users/kadoros1130/WS/1_CAU/HKT/CT/sub_v4_normal/model.pth"),
 )
-print("Stable 모델 해시:", get_official_hash("./model_high_stable.pth"))
+print(
+    "Stable 모델 해시:",
+    get_official_hash("/Users/kadoros1130/WS/1_CAU/HKT/CT/sub_v5_safe/model.pth"),
+)

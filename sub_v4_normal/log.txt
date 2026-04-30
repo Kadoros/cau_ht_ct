@@ -1,0 +1,4 @@
+
+[데이터 해시값]
+train_folder_hash : 2100A696FED330AB604EEAC917ED10C7
+model_weight_hash : 6C7B94E7FD94059CA1BE91CE87D7421B

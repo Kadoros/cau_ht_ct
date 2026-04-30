@@ -1,0 +1,365 @@
+cvmlserver5@cvmlserver5:~/Hyeon/research/PINO-4DGS/CT/cau_ht_ct$ conda env create -p /home/cvmlserver5/Hyeon/.conda_envs/CT -f setting_linux.yml
+Collecting package metadata (repodata.json): \ WARNING conda.models.version:get_matcher(556): Using .* with relational operator is superfluous and d
+eprecated and will be removed in a future version of conda. Your spec was 1.8.0.*, but conda is ignoring the .* and treating it as 1.8.0
+WARNING conda.models.version:get_matcher(556): Using .* with relational operator is superfluous and deprecated and will be removed in a future versi
+on of conda. Your spec was 1.9.0.*, but conda is ignoring the .* and treating it as 1.9.0
+WARNING conda.models.version:get_matcher(556): Using .* with relational operator is superfluous and deprecated and will be removed in a future versi
+on of conda. Your spec was 1.7.1.*, but conda is ignoring the .* and treating it as 1.7.1
+WARNING conda.models.version:get_matcher(556): Using .* with relational operator is superfluous and deprecated and will be removed in a future versi
+on of conda. Your spec was 1.6.0.*, but conda is ignoring the .* and treating it as 1.6.0
+done
+Solving environment: - ^[\ ^[[A^[| ^[[A^[[A^[| - | - \ / - / ^C\ / - | - | / ^C- \ - - / | - Killed
+cvmlserver5@cvmlserver5:~/Hyeon/research/PINO-4DGS/CT/cau_ht_ct$ ^V^V
+: command not found
+cvmlserver5@cvmlserver5:~/Hyeon/research/PINO-4DGS/CT/cau_ht_ct$ conda env remove -p /home/cvmlserver5/Hyeon/.conda_envs/CT
+cvmlserver5@cvmlserver5:~/Hyeon/research/PINO-4DGS/CT/cau_ht_ct$ conda env create -p /home/cvmlserver5/Hyeon/.conda_envs/CT -f setting.yml --solver=
+libmamba
+Channels:
+ - conda-forge
+ - pytorch
+ - defaults
+Platform: linux-64
+Collecting package metadata (repodata.json): done
+Solving environment: | warning  libmamba Problem type not implemented SOLVER_RULE_STRICT_REPO_PRIORITY
+/ ^Cwarning  libmamba Problem type not implemented SOLVER_RULE_STRICT_REPO_PRIORITY
+failed
+
+PackagesNotFoundError: The following packages are not available from current channels:
+
+  - aom==3.9.1=h7bae524_0
+  - backports.zstd==1.3.0=py310h2d60bed_0
+  - brotli-python==1.2.0=py310h6123dab_1
+  - bzip2==1.0.8=hd037594_9
+  - cairo==1.18.4=he0f2337_1
+  - dav1d==1.2.1=hb547adb_0
+  - dbus==1.16.2=h3ff7a7c_1
+  - ffmpeg==8.0.1=gpl_ha5d8480_115
+  - fontconfig==2.17.1=h2b252f5_0
+  - fribidi==1.0.16=hc919400_0
+  - gdk-pixbuf==2.44.6=h4e57454_0
+  - glslang==16.2.0=h7cb4797_1
+  - gmp==6.3.0=h7bae524_2
+  - gmpy2==2.3.0=py310h6ac7f53_1
+  - graphite2==1.3.14=hec049ff_2
+  - harfbuzz==14.2.0=h3103d1b_0
+  - icu==78.3=hef89b57_0
+  - lame==3.100=h1a8c8d9_1003
+  - lcms2==2.18=hdfa7624_0
+  - lerc==4.1.0=h1eee2c3_0
+  - libabseil==20260107.1=cxx17_h2062a1b_0
+  - libass==0.17.4=hcbd7ca7_0
+  - libblas==3.11.0=6_h51639a9_openblas
+  - libbrotlicommon==1.2.0=hc919400_1
+  - libbrotlidec==1.2.0=hc919400_1
+  - libbrotlienc==1.2.0=hc919400_1
+  - libcblas==3.11.0=6_hb0561ab_openblas
+  - libcxx==22.1.4=h55c6f16_0
+  - libdeflate==1.25=hc11a715_0
+  - libdovi==3.3.2=h78f8ca3_3
+  - libexpat==2.7.5=hf6b4638_0
+  - libffi==3.5.2=hcf2aa1b_0
+  - libfreetype6==2.14.3=hdfa99f5_0
+  - libfreetype==2.14.3=hce30654_0
+  - libgcc==15.2.0=hcbb3090_18
+  - libgfortran5==15.2.0=hdae7583_18
+  - libgfortran==15.2.0=h07b0088_18
+  - libglib==2.86.4=he378b5c_1
+  - libhwloc==2.12.2=default_ha3cc4f2_1000
+  - libhwy==1.4.0=ha332bbd_0
+  - libiconv==1.18=h23cfdf5_2
+  - libintl==0.25.1=h493aca8_0
+  - libjpeg-turbo==3.1.4.1=h84a0fba_0
+  - libjxl==0.11.2=h934fa54_1
+  - liblapack==3.11.0=6_hd9741b5_openblas
+  - liblzma==5.8.3=h8088a28_0
+  - libogg==1.3.5=h48c0fde_1
+  - libopenblas==0.3.32=openmp_he657e61_0
+  - libopenvino-arm-cpu-plugin==2026.0.0=h3e6d54f_1
+  - libopenvino-auto-batch-plugin==2026.0.0=h2406d2e_1
+  - libopenvino-auto-plugin==2026.0.0=h2406d2e_1
+  - libopenvino-hetero-plugin==2026.0.0=h85cbfa6_1
+  - libopenvino-ir-frontend==2026.0.0=h85cbfa6_1
+  - libopenvino-onnx-frontend==2026.0.0=h41365f2_1
+  - libopenvino-paddle-frontend==2026.0.0=h41365f2_1
+  - libopenvino-pytorch-frontend==2026.0.0=hf6b4638_1
+  - libopenvino-tensorflow-frontend==2026.0.0=hc295da0_1
+  - libopenvino-tensorflow-lite-frontend==2026.0.0=hf6b4638_1
+  - libopenvino==2026.0.0=h3e6d54f_1
+  - libopus==1.6.1=h1a92334_0
+  - libplacebo==7.351.0=h176d363_2
+  - libpng==1.6.58=h132b30e_0
+  - libprotobuf==6.33.5=h4a5acfd_0
+  - librsvg==2.62.1=he8aa2a2_0
+  - libsqlite==3.53.0=h1b79a29_0
+  - libtiff==4.7.1=h4030677_1
+  - libusb==1.0.29=hbc156a2_0
+  - libvorbis==1.3.7=h81086ad_2
+  - libvpx==1.15.2=ha759d40_0
+  - libvulkan-loader==1.4.341.0=h3feff0a_0
+  - libwebp-base==1.6.0=h07db88b_0
+  - libxcb==1.17.0=hdb1d25a_0
+  - libxml2-16==2.15.3=h5ef1a60_0
+  - libxml2==2.15.3=h5654f7c_0
+  - libzlib==1.3.2=h8088a28_2
+  - llvm-openmp==22.1.4=hc7d1edf_0
+  - markupsafe==3.0.3=py310hb46c203_1
+  - mpc==1.4.0=h169892a_0
+  - mpfr==4.2.2=h6bc93b0_0
+  - ncurses==6.5=h5e97a16_3
+  - numpy==1.26.4=py310hd45542a_0
+  - openh264==2.6.0=hb5b2745_0
+  - openjpeg==2.5.4=hd9e9057_0
+  - openssl==3.6.2=hd24854e_0
+  - pandas==2.3.3=py310h25f4b65_1
+  - pango==1.56.4=hf80efc4_1
+  - pcre2==10.47=h30297fc_0
+  - pillow==12.2.0=py310hc037f36_0
+  - pixman==0.46.4=h81086ad_1
+  - pthread-stubs==0.4=hd74edd7_1002
+  - pugixml==1.15=hd3d436d_0
+  - python==3.10.20=h1b19095_0_cpython
+  - pytorch==2.1.2=py3.10_0
+  - pyyaml==6.0.3=py310hb46c203_1
+  - readline==8.3=h46df422_0
+  - scikit-learn==1.7.2=py310h660f142_0
+  - scipy==1.15.2=py310h32ab4ed_0
+  - sdl2==2.32.56=h248ca61_0
+  - sdl3==3.4.4=h6fa9c73_0
+  - shaderc==2025.5=hf31e910_1
+  - snappy==1.2.2=hada39a4_1
+  - spirv-tools==2026.1=h4ddebb9_0
+  - svt-av1==4.0.1=h0cb729a_0
+  - tbb==2022.3.0=h4ddebb9_2
+  - tk==8.6.13=h010d191_3
+  - x264==1!164.3095=h57fd34a_2
+  - x265==3.5=hbc6ce65_3
+  - xorg-libxau==1.0.12=hc919400_1
+  - xorg-libxdmcp==1.1.5=hc919400_1
+  - yaml==0.2.5=h925e9cb_3
+  - zlib-ng==2.3.3=hed4e4f5_1
+  - zstd==1.5.7=hbf9d68e_6
+
+Current channels:
+
+  - https://conda.anaconda.org/conda-forge/linux-64
+  - https://conda.anaconda.org/pytorch/linux-64
+  - https://repo.anaconda.com/pkgs/main/linux-64
+  - https://repo.anaconda.com/pkgs/r/linux-64
+
+To search for alternate channels that may provide the conda package you're
+looking for, navigate to
+
+    https://anaconda.org
+
+and use the search bar at the top of the page.
+
+
+cvmlserver5@cvmlserver5:~/Hyeon/research/PINO-4DGS/CT/cau_ht_ct$ git pull
+remote: Enumerating objects: 5, done.
+remote: Counting objects: 100% (5/5), done.
+remote: Compressing objects: 100% (2/2), done.
+remote: Total 3 (delta 1), reused 3 (delta 1), pack-reused 0 (from 0)
+Unpacking objects: 100% (3/3), 486 bytes | 486.00 KiB/s, done.
+From https://github.com/Kadoros/cau_ht_ct
+   dbfde93..3f5d407  main       -> origin/main
+Updating dbfde93..3f5d407
+Fast-forward
+ setting_linux.yml | 9 ++++++---
+ 1 file changed, 6 insertions(+), 3 deletions(-)
+cvmlserver5@cvmlserver5:~/Hyeon/research/PINO-4DGS/CT/cau_ht_ct$ conda env remove -p /home/cvmlserver5/Hyeon/.conda_envs/CT
+cvmlserver5@cvmlserver5:~/Hyeon/research/PINO-4DGS/CT/cau_ht_ct$ conda env create -p /home/cvmlserver5/Hyeon/.conda_envs/CT -f setting_linux.yml --s
+olver=libmamba
+Channels:
+ - pytorch
+ - nvidia
+ - conda-forge
+ - defaults
+Platform: linux-64
+Collecting package metadata (repodata.json): done
+Solving environment: done
+
+Downloading and Extracting Packages
+
+Preparing transaction: done
+Verifying transaction: done
+Executing transaction: done
+#
+# To activate this environment, use
+#
+#     $ conda activate /home/cvmlserver5/Hyeon/.conda_envs/CT
+#
+# To deactivate an active environment, use
+#
+#     $ conda deactivate
+
+cvmlserver5@cvmlserver5:~/Hyeon/research/PINO-4DGS/CT/cau_ht_ct$ conda activate /home/cvmlserver5/Hyeon/.conda_envs/CT
+(/home/cvmlserver5/Hyeon/.conda_envs/CT) cvmlserver5@cvmlserver5:~/Hyeon/research/PINO-4DGS/CT/cau_ht_ct$ python train.py --train_dir ./train --save
+_path ./model.pth --search_lambda
+Traceback (most recent call last):
+  File "/home/cvmlserver5/Hyeon/research/PINO-4DGS/CT/cau_ht_ct/train.py", line 29, in <module>
+    from model_san1 import build_model
+ModuleNotFoundError: No module named 'model_san1'
+(/home/cvmlserver5/Hyeon/.conda_envs/CT) cvmlserver5@cvmlserver5:~/Hyeon/research/PINO-4DGS/CT/cau_ht_ct$ git pull
+remote: Enumerating objects: 5, done.
+remote: Counting objects: 100% (5/5), done.
+remote: Compressing objects: 100% (1/1), done.
+remote: Total 3 (delta 2), reused 3 (delta 2), pack-reused 0 (from 0)
+Unpacking objects: 100% (3/3), 277 bytes | 138.00 KiB/s, done.
+From https://github.com/Kadoros/cau_ht_ct
+   3f5d407..a804a0b  main       -> origin/main
+Updating 3f5d407..a804a0b
+Fast-forward
+ train.py | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+(/home/cvmlserver5/Hyeon/.conda_envs/CT) cvmlserver5@cvmlserver5:~/Hyeon/research/PINO-4DGS/CT/cau_ht_ct$ python train.py --train_dir ./train --save
+_path ./model.pth --search_lambda
+Device: cuda
+Config: channels=64, modes=12, λ=0.001
+
+Loading datasets...
+    Loaded 6000 images from ./train/axial
+    Loaded 6000 images from ./train/coronal
+    Loaded 440 images from ./train/sagittal
+    Loaded 6000 images from ./train/axial
+    Loaded 6000 images from ./train/coronal
+    Loaded 440 images from ./train/sagittal
+  Axial   : 6000 samples
+  Coronal : 6000 samples
+  Sagittal: 440 samples
+
+Model params: 4,857,931
+
+[Step 1] Pre-training on Axial + Coronal...
+  Epoch [  1/200] loss=2.1717 acc=33.8%
+  Epoch [ 10/200] loss=0.9340 acc=85.1%
+  Epoch [ 20/200] loss=0.7425 acc=93.4%
+  Epoch [ 30/200] loss=0.6744 acc=96.2%
+  Epoch [ 40/200] loss=0.6183 acc=98.1%
+  Epoch [ 50/200] loss=0.5877 acc=99.0%
+  Epoch [ 60/200] loss=0.5678 acc=99.5%
+  Epoch [ 70/200] loss=0.5570 acc=99.7%
+  Epoch [ 80/200] loss=0.5494 acc=99.7%
+  Epoch [ 90/200] loss=0.5418 acc=99.9%
+  Epoch [100/200] loss=0.5371 acc=99.9%
+  Epoch [110/200] loss=0.5350 acc=99.9%
+  Epoch [120/200] loss=0.5327 acc=99.9%
+  Epoch [130/200] loss=0.5295 acc=100.0%
+  Epoch [140/200] loss=0.5279 acc=100.0%
+  Epoch [150/200] loss=0.5266 acc=100.0%
+  Epoch [160/200] loss=0.5257 acc=100.0%
+  Epoch [170/200] loss=0.5250 acc=100.0%
+  Epoch [180/200] loss=0.5242 acc=100.0%
+  Epoch [190/200] loss=0.5238 acc=100.0%
+  Epoch [200/200] loss=0.5240 acc=100.0%
+  Pre-training done. Best loss: 0.5238
+
+[Step 2] FOMAML meta-training on Axial + Coronal...
+  Meta-epoch [  1/50] query_loss=0.5258
+  Meta-epoch [ 10/50] query_loss=0.5256
+  Meta-epoch [ 20/50] query_loss=0.5244
+  Meta-epoch [ 30/50] query_loss=0.5237
+  Meta-epoch [ 40/50] query_loss=0.5247
+  Meta-epoch [ 50/50] query_loss=0.5239
+  Meta-training done.
+
+Sagittal split for lambda search: train=352, val=88
+
+[Lambda Search on stratified Sagittal validation]
+
+[Step 3] Fine-tuning on Sagittal with L2-SP (λ=0.0010)...
+  FT Epoch [  1/80] loss=1.8403 acc=45.7% best_val=-inf
+  FT Epoch [ 10/80] loss=1.4803 acc=56.8% best_val=0.7158
+  FT Epoch [ 20/80] loss=1.2198 acc=68.8% best_val=0.7158
+  FT Epoch [ 30/80] loss=1.1344 acc=71.9% best_val=0.7158
+  FT Epoch [ 40/80] loss=1.0843 acc=75.0% best_val=0.7158
+  FT Epoch [ 50/80] loss=0.9785 acc=82.4% best_val=0.7158
+  FT Epoch [ 60/80] loss=0.9711 acc=81.5% best_val=0.7220
+  FT Epoch [ 70/80] loss=0.9703 acc=82.4% best_val=0.7411
+  FT Epoch [ 80/80] loss=0.9767 acc=81.0% best_val=0.7411
+  Fine-tuning done. Best metric: 0.7411 at Epoch 65
+
+[Evaluation]
+  F1 Axial    (A): 1.0000
+  F1 Coronal  (C): 1.0000
+  F1 Sagittal (S): 0.6301
+  Final Score    : 0.7411  (0.7×S + 0.3×(A+C)/2)
+
+[Step 3] Fine-tuning on Sagittal with L2-SP (λ=0.0050)...
+  FT Epoch [  1/80] loss=1.8480 acc=42.6% best_val=-inf
+  FT Epoch [ 10/80] loss=1.4716 acc=56.8% best_val=0.7162
+  FT Epoch [ 20/80] loss=1.2674 acc=65.6% best_val=0.7162
+  FT Epoch [ 30/80] loss=1.2001 acc=71.0% best_val=0.7162
+  FT Epoch [ 40/80] loss=1.0923 acc=76.4% best_val=0.7162
+  FT Epoch [ 50/80] loss=1.0718 acc=79.0% best_val=0.7162
+  FT Epoch [ 60/80] loss=1.0419 acc=80.1% best_val=0.7162
+  FT Epoch [ 70/80] loss=1.0186 acc=83.5% best_val=0.7214
+  FT Epoch [ 80/80] loss=1.0534 acc=80.7% best_val=0.7214
+  Fine-tuning done. Best metric: 0.7214 at Epoch 70
+
+[Evaluation]
+  F1 Axial    (A): 1.0000
+  F1 Coronal  (C): 1.0000
+  F1 Sagittal (S): 0.6020
+  Final Score    : 0.7214  (0.7×S + 0.3×(A+C)/2)
+
+[Step 3] Fine-tuning on Sagittal with L2-SP (λ=0.0100)...
+  FT Epoch [  1/80] loss=1.8732 acc=45.2% best_val=-inf
+  FT Epoch [ 10/80] loss=1.4768 acc=58.2% best_val=0.6951
+  FT Epoch [ 20/80] loss=1.2738 acc=65.3% best_val=0.7012
+  FT Epoch [ 30/80] loss=1.2243 acc=71.0% best_val=0.7012
+  FT Epoch [ 40/80] loss=1.1347 acc=76.1% best_val=0.7062
+  FT Epoch [ 50/80] loss=1.1005 acc=79.5% best_val=0.7177
+  FT Epoch [ 60/80] loss=1.0618 acc=79.3% best_val=0.7177
+^[[A^[[A^[[A^[[A^[[A^[[A^[[A^[[A^[[A^[[A^[[A^[[A^[[A^[[A^[[A^[[A^[[A^[[A^[[A^[[A^[[A^[[A  FT Epoch [ 70/80] loss=1.1021 acc=76.4% best_val=0.7284
+  FT Epoch [ 80/80] loss=1.0769 acc=79.5% best_val=0.7361
+  Fine-tuning done. Best metric: 0.7361 at Epoch 80
+
+[Evaluation]
+  F1 Axial    (A): 1.0000
+  F1 Coronal  (C): 1.0000
+  F1 Sagittal (S): 0.6231
+  Final Score    : 0.7361  (0.7×S + 0.3×(A+C)/2)
+
+[Step 3] Fine-tuning on Sagittal with L2-SP (λ=0.0500)...
+  FT Epoch [  1/80] loss=1.9003 acc=44.3% best_val=-inf
+  FT Epoch [ 10/80] loss=1.5550 acc=56.8% best_val=0.7170
+  FT Epoch [ 20/80] loss=1.3918 acc=62.5% best_val=0.7170
+  FT Epoch [ 30/80] loss=1.3548 acc=66.5% best_val=0.7170
+  FT Epoch [ 40/80] loss=1.3025 acc=67.6% best_val=0.7170
+  FT Epoch [ 50/80] loss=1.2847 acc=70.5% best_val=0.7170
+  FT Epoch [ 60/80] loss=1.2422 acc=74.1% best_val=0.7170
+  FT Epoch [ 70/80] loss=1.3170 acc=66.8% best_val=0.7170
+  FT Epoch [ 80/80] loss=1.2664 acc=69.3% best_val=0.7170
+  Fine-tuning done. Best metric: 0.7170 at Epoch 10
+
+[Evaluation]
+  F1 Axial    (A): 1.0000
+  F1 Coronal  (C): 1.0000
+  F1 Sagittal (S): 0.5957
+  Final Score    : 0.7170  (0.7×S + 0.3×(A+C)/2)
+  Best λ = 0.0010 at Epoch 65 (Val Final=0.7411)
+
+[Final Training] Fine-tune on all Sagittal shots for 65 Epochs (Early Stopped)
+
+[Step 3] Fine-tuning on Sagittal with L2-SP (λ=0.0010)...
+  FT Epoch [  1/65] loss=1.8491 acc=45.2%
+  FT Epoch [ 10/65] loss=1.4423 acc=59.5%
+  FT Epoch [ 20/65] loss=1.1900 acc=68.6%
+  FT Epoch [ 30/65] loss=1.0918 acc=73.2%
+  FT Epoch [ 40/65] loss=1.0403 acc=79.8%
+  FT Epoch [ 50/65] loss=1.0068 acc=79.8%
+  FT Epoch [ 60/65] loss=1.0020 acc=81.4%
+  Fine-tuning done. Best metric: 0.9775 at Epoch 63
+
+[Evaluation]
+  F1 Axial    (A): 1.0000
+  F1 Coronal  (C): 1.0000
+  F1 Sagittal (S): 0.8996
+  Final Score    : 0.9297  (0.7×S + 0.3×(A+C)/2)
+
+Model saved to: ./model.pth
+(/home/cvmlserver5/Hyeon/.conda_envs/CT) cvmlserver5@cvmlserver5:~/Hyeon/research/PINO-4DGS/CT/cau_ht_ct$ tmux set -g mouse on
+(/home/cvmlserver5/Hyeon/.conda_envs/CT) cvmlserver5@cvmlserver5:~/Hyeon/research/PINO-4DGS/CT/cau_ht_ct$ # 지금 실행 중인 화면의 내용을 log.txt로
+저장
+(/home/cvmlserver5/Hyeon/.conda_envs/CT) cvmlserver5@cvmlserver5:~/Hyeon/research/PINO-4DGS/CT/cau_ht_ct$ tmux capture-pane -pS -1000 > logs.txt
+

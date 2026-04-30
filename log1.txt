@@ -1,0 +1,92 @@
+cvmlserver5@cvmlserver5:~$ conda env list
+# conda environments:
+#
+CT                       /home/cvmlserver5/Hyeon/.conda_envs/CT
+MRE-Hyper                /home/cvmlserver5/Hyeon/.conda_envs/MRE-Hyper
+endo4dgs                 /home/cvmlserver5/Hyeon/.conda_envs/endo4dgs
+kelvinlet             *  /home/cvmlserver5/Hyeon/.conda_envs/kelvinlet
+prosta                   /home/cvmlserver5/Hyeon/.conda_envs/prosta
+base                     /home/cvmlserver5/anaconda3
+op                       /home/cvmlserver5/anaconda3/envs/op
+sslalign_gpu             /home/cvmlserver5/anaconda3/envs/sslalign_gpu
+prosta                   /home/cvmlserver5/gyubeom/.conda_envs/prosta
+sound2scene              /home/cvmlserver5/gyubeom/.conda_envs/sound2scene
+
+cvmlserver5@cvmlserver5:~$ conda activate CT
+(/home/cvmlserver5/Hyeon/.conda_envs/CT) cvmlserver5@cvmlserver5:~$ cd Hyeon/research/PINO-4DGS/CT/
+(/home/cvmlserver5/Hyeon/.conda_envs/CT) cvmlserver5@cvmlserver5:~/Hyeon/research/PINO-4DGS/CT$ python train.py --train_dir ./train --save_path ./mo
+del_safe.pth --channels 64 --modes 12 --lambda_val 0.005 --finetune_epochs 45
+python: can't open file '/home/cvmlserver5/Hyeon/research/PINO-4DGS/CT/train.py': [Errno 2] No such file or directory
+(/home/cvmlserver5/Hyeon/.conda_envs/CT) cvmlserver5@cvmlserver5:~/Hyeon/research/PINO-4DGS/CT$ ls
+cau_ht_ct
+(/home/cvmlserver5/Hyeon/.conda_envs/CT) cvmlserver5@cvmlserver5:~/Hyeon/research/PINO-4DGS/CT$ cd cau_ht_ct/
+(/home/cvmlserver5/Hyeon/.conda_envs/CT) cvmlserver5@cvmlserver5:~/Hyeon/research/PINO-4DGS/CT/cau_ht_ct$ python train.py --train_dir ./train --save
+_path ./model_safe.pth --channels 64 --modes 12 --lambda_val 0.005 --finetune_epochs 45
+Device: cuda
+Config: channels=64, modes=12, λ=0.005
+
+Loading datasets...
+    Loaded 6000 images from ./train/axial
+    Loaded 6000 images from ./train/coronal
+    Loaded 440 images from ./train/sagittal
+    Loaded 6000 images from ./train/axial
+    Loaded 6000 images from ./train/coronal
+    Loaded 440 images from ./train/sagittal
+  Axial   : 6000 samples
+  Coronal : 6000 samples
+  Sagittal: 440 samples
+
+Model params: 4,857,931
+
+[Step 1] Pre-training on Axial + Coronal...
+  Epoch [  1/200] loss=2.1717 acc=33.8%
+  Epoch [ 10/200] loss=0.9340 acc=85.1%
+  Epoch [ 20/200] loss=0.7425 acc=93.4%
+  Epoch [ 30/200] loss=0.6744 acc=96.2%
+  Epoch [ 40/200] loss=0.6183 acc=98.1%
+  Epoch [ 50/200] loss=0.5877 acc=99.0%
+  Epoch [ 60/200] loss=0.5678 acc=99.5%
+  Epoch [ 70/200] loss=0.5570 acc=99.7%
+  Epoch [ 80/200] loss=0.5494 acc=99.7%
+  Epoch [ 90/200] loss=0.5418 acc=99.9%
+  Epoch [100/200] loss=0.5371 acc=99.9%
+  Epoch [110/200] loss=0.5350 acc=99.9%
+  Epoch [120/200] loss=0.5327 acc=99.9%
+  Epoch [130/200] loss=0.5295 acc=100.0%
+  Epoch [140/200] loss=0.5279 acc=100.0%
+  Epoch [150/200] loss=0.5266 acc=100.0%
+  Epoch [160/200] loss=0.5257 acc=100.0%
+  Epoch [170/200] loss=0.5250 acc=100.0%
+  Epoch [180/200] loss=0.5242 acc=100.0%
+  Epoch [190/200] loss=0.5238 acc=100.0%
+  Epoch [200/200] loss=0.5240 acc=100.0%
+  Pre-training done. Best loss: 0.5238
+
+[Step 2] FOMAML meta-training on Axial + Coronal...
+  Meta-epoch [  1/50] query_loss=0.5258
+  Meta-epoch [ 10/50] query_loss=0.5256
+  Meta-epoch [ 20/50] query_loss=0.5244
+  Meta-epoch [ 30/50] query_loss=0.5237
+  Meta-epoch [ 40/50] query_loss=0.5247
+  Meta-epoch [ 50/50] query_loss=0.5239
+  Meta-training done.
+
+[Final Training] Fine-tune on all Sagittal shots for 45 Epochs (Early Stopped)
+
+[Step 3] Fine-tuning on Sagittal with L2-SP (λ=0.0050)...
+  FT Epoch [  1/45] loss=1.8857 acc=44.5%
+  FT Epoch [ 10/45] loss=1.4956 acc=57.3%
+  FT Epoch [ 20/45] loss=1.2699 acc=67.0%
+  FT Epoch [ 30/45] loss=1.2591 acc=68.9%
+  FT Epoch [ 40/45] loss=1.1782 acc=70.2%
+  Fine-tuning done. Best metric: 1.1735 at Epoch 44
+
+[Evaluation]
+  F1 Axial    (A): 1.0000
+  F1 Coronal  (C): 1.0000
+  F1 Sagittal (S): 0.7996
+  Final Score    : 0.8597  (0.7×S + 0.3×(A+C)/2)
+
+Model saved to: ./model_safe.pth
+(/home/cvmlserver5/Hyeon/.conda_envs/CT) cvmlserver5@cvmlserver5:~/Hyeon/research/PINO-4DGS/CT/cau_ht_ct$ tmux capture-pane -pS -1000 > log1.txt
+
