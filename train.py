@@ -26,7 +26,7 @@ try:
 except ImportError:
     from torch.nn.utils.stateless import functional_call
 
-from model_san1 import build_model
+from model import build_model
 
 
 # ══════════════════════════════════════════════════════════
