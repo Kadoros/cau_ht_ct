@@ -1,169 +1,209 @@
 ﻿import os
-import math
 import copy
 import argparse
-import random
-import numpy as np
-import pandas as pd
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from torch.utils.data import Dataset, DataLoader, ConcatDataset
-from torchvision.io import read_image, ImageReadMode
-from model_ewc import build_model
+from torch.utils.data import DataLoader, ConcatDataset
+
+# [핵심] 우리가 최적화한 최신 모델과 검증용 유틸리티들 임포트
+from model_san1 import build_model
+from train_san2 import (
+    load_domain,
+    evaluate_all,
+    stratified_split_indices,
+    MedSubset,
+    pretrain,
+)
+from model_ewc import EWC
 
 
-class MedDataset(Dataset):
-    CLASS_NAMES = [
-        "bladder",
-        "femur-left",
-        "femur-right",
-        "heart",
-        "kidney-left",
-        "kidney-right",
-        "liver",
-        "lung-left",
-        "lung-right",
-        "pancreas",
-        "spleen",
-    ]
+def train_ewc_with_eval(
+    model, train_loader, val_datasets, ewc, device, epochs=50, lr=1e-4, ewc_lambda=1000
+):
+    """검증 로직(Early Stopping)이 추가된 EWC 파인튜닝 함수"""
+    model.to(device)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
+    criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
 
-    def __init__(self, image_dir, label_csv, augment=False):
-        self.image_dir, self.augment = image_dir, augment
-        raw = pd.read_csv(label_csv, index_col=0, dtype=str)
-        raw = raw[raw.index != "Index"]
-        labels = raw[self.CLASS_NAMES].astype(int).values.argmax(axis=1)
-        filenames = raw.index.tolist()
-        fname_to_label = {fn: int(lbl) for fn, lbl in zip(filenames, labels)}
-        self.imgs, self.labels = [], []
-        for fn in sorted(
-            [f for f in os.listdir(image_dir) if f.lower().endswith(".png")]
-        ):
-            key = os.path.splitext(fn)[0]
-            if key in fname_to_label:
-                img = read_image(
-                    os.path.join(image_dir, fn), mode=ImageReadMode.GRAY
-                ).float()
-                if img.shape[-2:] != (28, 28):
-                    img = F.interpolate(
-                        img.unsqueeze(0),
-                        size=(28, 28),
-                        mode="bilinear",
-                        align_corners=False,
-                    ).squeeze(0)
-                img = (img - img.min()) / (img.max() - img.min() + 1e-8)
-                self.imgs.append((img - 0.5) / 0.5)
-                self.labels.append(fname_to_label[key])
-        self.imgs = torch.stack(self.imgs).contiguous()
-        self.labels = torch.tensor(self.labels, dtype=torch.long)
+    print(f"\n[Step 3] Fine-tuning on Sagittal with EWC (lambda={ewc_lambda})...")
 
-    def __len__(self):
-        return len(self.labels)
+    best_metric = -float("inf")
+    best_state = copy.deepcopy(model.state_dict())
+    best_epoch = 1
 
-    def __getitem__(self, idx):
-        img = self.imgs[idx].clone()
-        if self.augment:
-            img = self._augment(img)
-        return img, self.labels[idx]
-
-    def _augment(self, img):
-        if torch.rand(()) < 0.6:
-            angle = (torch.rand(()).item() - 0.5) * 60.0
-            theta = torch.tensor(
-                [
-                    [math.cos(math.radians(angle)), -math.sin(math.radians(angle)), 0],
-                    [math.sin(math.radians(angle)), math.cos(math.radians(angle)), 0],
-                ],
-                dtype=img.dtype,
-            ).unsqueeze(0)
-            grid = F.affine_grid(theta, img.unsqueeze(0).shape, align_corners=False)
-            img = F.grid_sample(
-                img.unsqueeze(0),
-                grid,
-                align_corners=False,
-                mode="bilinear",
-                padding_mode="border",
-            ).squeeze(0)
-        return img.clamp(-1.0, 1.0)
-
-
-class EWC:
-    def __init__(self, model, loader, device):
-        self.model, self.device = model, device
-        self.params = {
-            n: p.clone().detach()
-            for n, p in model.named_parameters()
-            if p.requires_grad
-        }
-        self.fisher = self._diag_fisher(loader)
-
-    def _diag_fisher(self, loader):
-        fisher = {n: torch.zeros_like(p) for n, p in self.params.items()}
-        self.model.eval()
-        for img, lbl in loader:
-            self.model.zero_grad()
-            F.cross_entropy(
-                self.model(img.to(self.device)), lbl.to(self.device)
-            ).backward()
-            for n, p in self.model.named_parameters():
-                if p.requires_grad:
-                    fisher[n] += p.grad.data**2 / len(loader)
-        return fisher
-
-    def penalty(self, model):
-        loss = 0
-        for n, p in model.named_parameters():
-            if p.requires_grad:
-                loss += (self.fisher[n] * (p - self.params[n]) ** 2).sum()
-        return loss
-
-
-def train_ewc(train_dir, device, pre_epochs=100, ft_epochs=100, lam=1000):
-    model = build_model().to(device)
-    axial = MedDataset(
-        os.path.join(train_dir, "axial"),
-        os.path.join(train_dir, "label", "axial.csv"),
-        augment=True,
-    )
-    coronal = MedDataset(
-        os.path.join(train_dir, "coronal"),
-        os.path.join(train_dir, "label", "coronal.csv"),
-        augment=True,
-    )
-    sagittal = MedDataset(
-        os.path.join(train_dir, "sagittal"),
-        os.path.join(train_dir, "label", "sagittal.csv"),
-        augment=True,
-    )
-    loader = DataLoader(ConcatDataset([axial, coronal]), batch_size=64, shuffle=True)
-    opt = torch.optim.AdamW(model.parameters(), lr=1e-3)
-    for _ in range(pre_epochs):
+    for epoch in range(epochs):
         model.train()
-        for img, lbl in loader:
-            opt.zero_grad()
-            F.cross_entropy(model(img.to(device)), lbl.to(device)).backward()
-            opt.step()
-    ewc = EWC(model, DataLoader(ConcatDataset([axial, coronal]), batch_size=32), device)
-    loader = DataLoader(sagittal, batch_size=32, shuffle=True)
-    opt = torch.optim.AdamW(model.parameters(), lr=1e-4)
-    for epoch in range(ft_epochs):
-        model.train()
-        for img, lbl in loader:
-            opt.zero_grad()
-            (
-                F.cross_entropy(model(img.to(device)), lbl.to(device))
-                + lam * ewc.penalty(model)
-            ).backward()
-            opt.step()
-        if (epoch + 1) % 10 == 0:
-            print(f"FT Epoch {epoch+1} done.")
-    torch.save(model.state_dict(), "model.pth")
+        total_loss, correct, total = 0.0, 0, 0
+
+        for imgs, lbls in train_loader:
+            imgs, lbls = imgs.to(device), lbls.to(device)
+            optimizer.zero_grad(set_to_none=True)
+
+            output = model(imgs)
+            ce_loss = criterion(output, lbls)
+
+            # EWC Penalty
+            ewc_loss = ewc.penalty(model)
+            loss = ce_loss + ewc_lambda * ewc_loss
+
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            optimizer.step()
+
+            total_loss += loss.item() * len(lbls)
+            correct += (output.argmax(1) == lbls).sum().item()
+            total += len(lbls)
+
+        avg_loss = total_loss / max(total, 1)
+        acc = correct / max(total, 1) * 100.0
+
+        # 매 에포크마다 20% 분리된 검증셋으로 성능 체크
+        if val_datasets is not None:
+            scores = evaluate_all(model, *val_datasets, device=device, verbose=False)
+            metric = scores["Final"]
+            if metric > best_metric:
+                best_metric = metric
+                best_state = copy.deepcopy(model.state_dict())
+                best_epoch = epoch + 1
+
+            if (epoch + 1) % 5 == 0 or epoch == 0:
+                print(
+                    f"  FT Epoch [{epoch+1:2d}/{epochs}] loss={avg_loss:.4f} acc={acc:.1f}% best_val={best_metric:.4f}"
+                )
+        else:
+            if (epoch + 1) % 5 == 0 or epoch == 0:
+                print(
+                    f"  FT Epoch [{epoch+1:2d}/{epochs}] loss={avg_loss:.4f} acc={acc:.1f}%"
+                )
+
+    if val_datasets is not None:
+        model.load_state_dict(best_state)
+        print(
+            f"  Fine-tuning done. Best validation metric: {best_metric:.4f} at Epoch {best_epoch}"
+        )
+        return model, best_epoch
+    else:
+        return model, epochs
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--train_dir", required=True)
+    parser.add_argument("--pretrain_epochs", type=int, default=150)
+    parser.add_argument("--ft_epochs", type=int, default=80)
+    parser.add_argument("--ewc_lambda", type=float, default=1000.0)  # EWC 강도
+    parser.add_argument("--lr", type=float, default=5e-5)
+    args = parser.parse_args()
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Device: {device}")
+
+    # 1. Load Data
+    print("Loading datasets...")
+    axial = load_domain(
+        os.path.join(args.train_dir, "axial"),
+        os.path.join(args.train_dir, "label", "axial.csv"),
+        augment=True,
+    )
+    coronal = load_domain(
+        os.path.join(args.train_dir, "coronal"),
+        os.path.join(args.train_dir, "label", "coronal.csv"),
+        augment=True,
+    )
+    sagittal = load_domain(
+        os.path.join(args.train_dir, "sagittal"),
+        os.path.join(args.train_dir, "label", "sagittal.csv"),
+        augment=True,
+    )
+
+    axial_eval = load_domain(
+        os.path.join(args.train_dir, "axial"),
+        os.path.join(args.train_dir, "label", "axial.csv"),
+        augment=False,
+    )
+    coronal_eval = load_domain(
+        os.path.join(args.train_dir, "coronal"),
+        os.path.join(args.train_dir, "label", "coronal.csv"),
+        augment=False,
+    )
+    sagittal_eval = load_domain(
+        os.path.join(args.train_dir, "sagittal"),
+        os.path.join(args.train_dir, "label", "sagittal.csv"),
+        augment=False,
+    )
+
+    # [핵심] 최적화된 채널 64, 모드 12 모델 생성
+    model = build_model(num_classes=11, channels=64, modes=12).to(device)
+
+    # 2. Pre-training
+    model = pretrain(
+        model, axial, coronal, device, epochs=args.pretrain_epochs, lr=1e-3
+    )
+    pretrained_state = copy.deepcopy(model.state_dict())
+
+    # 3. Fisher Information Matrix 계산
+    print("\n[Step 2] Calculating Fisher Information Matrix for Source Domains...")
+    fisher_loader = DataLoader(
+        ConcatDataset([axial_eval, coronal_eval]),
+        batch_size=32,
+        shuffle=False,
+        num_workers=4,
+    )
+    ewc = EWC(model, fisher_loader, device)
+
+    # 4. [핵심] Sagittal 데이터를 80(Train) : 20(Val) 로 분할하여 최적의 Epoch 찾기
+    print("\n[Step 3] Internal Validation to find best Epoch...")
+    train_idx, val_idx = stratified_split_indices(
+        sagittal_eval.labels, val_per_class=10, seed=42
+    )
+    sagittal_train_split = MedSubset(sagittal_eval, train_idx, augment=True)
+    sagittal_val_split = MedSubset(sagittal_eval, val_idx, augment=False)
+
+    val_loader = DataLoader(
+        sagittal_train_split, batch_size=32, shuffle=True, num_workers=4
+    )
+
+    # 20%로 평가하며 최고 성능 지점 찾기
+    _, best_epoch = train_ewc_with_eval(
+        model,
+        val_loader,
+        (axial_eval, coronal_eval, sagittal_val_split),
+        ewc,
+        device,
+        epochs=args.ft_epochs,
+        lr=args.lr,
+        ewc_lambda=args.ewc_lambda,
+    )
+
+    # 5. [핵심] 찾은 최적의 Epoch로 전체 Sagittal 데이터 100% 최종 학습 (오버피팅 방지)
+    print(f"\n[Final Training] Fine-tune on ALL Sagittal shots for {best_epoch} Epochs")
+    model.load_state_dict(pretrained_state)  # 파인튜닝 전으로 롤백
+    full_loader = DataLoader(sagittal, batch_size=32, shuffle=True, num_workers=4)
+
+    model, _ = train_ewc_with_eval(
+        model,
+        full_loader,
+        None,
+        ewc,
+        device,
+        epochs=best_epoch,
+        lr=args.lr,
+        ewc_lambda=args.ewc_lambda,
+    )
+
+    # 6. 최종 평가 및 저장
+    print("\n[Step 4] Final Evaluation (F1 Score)...")
+    evaluate_all(model, axial_eval, coronal_eval, sagittal_eval, device)
+
+    torch.save(
+        {
+            "model_state_dict": model.state_dict(),
+            "config": {"num_classes": 11, "channels": 64, "modes": 12},
+        },
+        "./ewc_fno_final.pth",
+    )
+    print("\nModel saved to: ./ewc_fno_final.pth")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--train_dir", required=True)
-    args = parser.parse_args()
-    train_ewc(
-        args.train_dir, torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    )
+    main()
