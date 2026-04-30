@@ -48,7 +48,6 @@ def train_dann_with_eval(
 ):
     print(f"\n[DANN Training] weight={dann_weight}, lr={lr}")
 
-    # [수정] GRL을 객체로 생성 (model_dann.py에 정의된 nn.Module 형태)
     grl = GradientReversalLayer()
 
     optimizer = torch.optim.AdamW(
@@ -76,8 +75,8 @@ def train_dann_with_eval(
             optimizer.zero_grad(set_to_none=True)
             p = float(epoch * num_iters + i) / (epochs * num_iters)
 
-            # alpha 값 업데이트
-            alpha_val = 2.0 / (1.0 + np.exp(-10 * p)) - 1
+            # [수정] GRL의 alpha 속성을 명시적으로 업데이트
+            grl.alpha = 2.0 / (1.0 + np.exp(-10 * p)) - 1
 
             for d_idx, loader_iter in enumerate(loaders):
                 try:
@@ -93,12 +92,11 @@ def train_dann_with_eval(
 
                 imgs, lbls = imgs.to(device), lbls.to(device)
 
-                # 모델 예측
                 logits, features = model(imgs, return_features=True)
                 cls_loss = criterion_cls(logits, lbls)
 
-                # [수정] GRL 객체를 텐서 연산처럼 호출! (apply가 아님)
-                reversed_features = grl(features, alpha_val)
+                # [수정] features만 넘겨서 호출
+                reversed_features = grl(features)
                 domain_logits = discriminator(reversed_features)
 
                 domain_lbls = torch.full(
@@ -126,12 +124,12 @@ def train_dann_with_eval(
 
             if (epoch + 1) % 5 == 0 or epoch == 0:
                 print(
-                    f"  Epoch [{epoch+1:2d}/{epochs}] Cls: {total_cls_loss/num_iters:.3f}, Dom: {total_dom_loss/num_iters:.3f}, Alpha: {alpha_val:.3f} | best_val={best_metric:.4f}"
+                    f"  Epoch [{epoch+1:2d}/{epochs}] Cls: {total_cls_loss/num_iters:.3f}, Dom: {total_dom_loss/num_iters:.3f}, Alpha: {grl.alpha:.3f} | best_val={best_metric:.4f}"
                 )
         else:
             if (epoch + 1) % 5 == 0 or epoch == 0:
                 print(
-                    f"  Epoch [{epoch+1:2d}/{epochs}] Cls: {total_cls_loss/num_iters:.3f}, Dom: {total_dom_loss/num_iters:.3f}, Alpha: {alpha_val:.3f}"
+                    f"  Epoch [{epoch+1:2d}/{epochs}] Cls: {total_cls_loss/num_iters:.3f}, Dom: {total_dom_loss/num_iters:.3f}, Alpha: {grl.alpha:.3f}"
                 )
 
     if val_datasets is not None:
