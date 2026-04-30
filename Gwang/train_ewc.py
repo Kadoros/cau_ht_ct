@@ -1,146 +1,169 @@
 ﻿import os
+import math
 import copy
 import argparse
+import random
+import numpy as np
+import pandas as pd
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, ConcatDataset
-from model import build_model
-from train import load_domain, evaluate_all
-from model_ewc import EWC
+import torch.nn.functional as F
+from torch.utils.data import Dataset, DataLoader, ConcatDataset
+from torchvision.io import read_image, ImageReadMode
+from model_ewc import build_model
 
 
-# ══════════════════════════════════════════════════════════
-# 1. EWC Training Pipeline
-# ══════════════════════════════════════════════════════════
-def train_with_ewc(
-    model, train_loader, ewc, device, epochs=50, lr=1e-4, ewc_lambda=1000
-):
-    model.to(device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
-    criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
+class MedDataset(Dataset):
+    CLASS_NAMES = [
+        "bladder",
+        "femur-left",
+        "femur-right",
+        "heart",
+        "kidney-left",
+        "kidney-right",
+        "liver",
+        "lung-left",
+        "lung-right",
+        "pancreas",
+        "spleen",
+    ]
 
-    print(f"\n[Step 3] Fine-tuning on Sagittal with EWC (lambda={ewc_lambda})...")
+    def __init__(self, image_dir, label_csv, augment=False):
+        self.image_dir, self.augment = image_dir, augment
+        raw = pd.read_csv(label_csv, index_col=0, dtype=str)
+        raw = raw[raw.index != "Index"]
+        labels = raw[self.CLASS_NAMES].astype(int).values.argmax(axis=1)
+        filenames = raw.index.tolist()
+        fname_to_label = {fn: int(lbl) for fn, lbl in zip(filenames, labels)}
+        self.imgs, self.labels = [], []
+        for fn in sorted(
+            [f for f in os.listdir(image_dir) if f.lower().endswith(".png")]
+        ):
+            key = os.path.splitext(fn)[0]
+            if key in fname_to_label:
+                img = read_image(
+                    os.path.join(image_dir, fn), mode=ImageReadMode.GRAY
+                ).float()
+                if img.shape[-2:] != (28, 28):
+                    img = F.interpolate(
+                        img.unsqueeze(0),
+                        size=(28, 28),
+                        mode="bilinear",
+                        align_corners=False,
+                    ).squeeze(0)
+                img = (img - img.min()) / (img.max() - img.min() + 1e-8)
+                self.imgs.append((img - 0.5) / 0.5)
+                self.labels.append(fname_to_label[key])
+        self.imgs = torch.stack(self.imgs).contiguous()
+        self.labels = torch.tensor(self.labels, dtype=torch.long)
 
-    model.train()
-    for epoch in range(epochs):
-        total_loss = 0
-        correct = 0
-        total = 0
+    def __len__(self):
+        return len(self.labels)
 
-        for imgs, lbls in train_loader:
-            imgs, lbls = imgs.to(device), lbls.to(device)
-            optimizer.zero_grad()
+    def __getitem__(self, idx):
+        img = self.imgs[idx].clone()
+        if self.augment:
+            img = self._augment(img)
+        return img, self.labels[idx]
 
-            output = model(imgs)
-            ce_loss = criterion(output, lbls)
+    def _augment(self, img):
+        if torch.rand(()) < 0.6:
+            angle = (torch.rand(()).item() - 0.5) * 60.0
+            theta = torch.tensor(
+                [
+                    [math.cos(math.radians(angle)), -math.sin(math.radians(angle)), 0],
+                    [math.sin(math.radians(angle)), math.cos(math.radians(angle)), 0],
+                ],
+                dtype=img.dtype,
+            ).unsqueeze(0)
+            grid = F.affine_grid(theta, img.unsqueeze(0).shape, align_corners=False)
+            img = F.grid_sample(
+                img.unsqueeze(0),
+                grid,
+                align_corners=False,
+                mode="bilinear",
+                padding_mode="border",
+            ).squeeze(0)
+        return img.clamp(-1.0, 1.0)
 
-            # EWC Penalty: Source Domain의 중요 가중치 보호
-            ewc_loss = ewc.penalty(model)
-            loss = ce_loss + ewc_lambda * ewc_loss
 
-            loss.backward()
-            optimizer.step()
+class EWC:
+    def __init__(self, model, loader, device):
+        self.model, self.device = model, device
+        self.params = {
+            n: p.clone().detach()
+            for n, p in model.named_parameters()
+            if p.requires_grad
+        }
+        self.fisher = self._diag_fisher(loader)
 
-            total_loss += loss.item()
-            correct += (output.argmax(1) == lbls).sum().item()
-            total += len(lbls)
+    def _diag_fisher(self, loader):
+        fisher = {n: torch.zeros_like(p) for n, p in self.params.items()}
+        self.model.eval()
+        for img, lbl in loader:
+            self.model.zero_grad()
+            F.cross_entropy(
+                self.model(img.to(self.device)), lbl.to(self.device)
+            ).backward()
+            for n, p in self.model.named_parameters():
+                if p.requires_grad:
+                    fisher[n] += p.grad.data**2 / len(loader)
+        return fisher
 
+    def penalty(self, model):
+        loss = 0
+        for n, p in model.named_parameters():
+            if p.requires_grad:
+                loss += (self.fisher[n] * (p - self.params[n]) ** 2).sum()
+        return loss
+
+
+def train_ewc(train_dir, device, pre_epochs=100, ft_epochs=100, lam=1000):
+    model = build_model().to(device)
+    axial = MedDataset(
+        os.path.join(train_dir, "axial"),
+        os.path.join(train_dir, "label", "axial.csv"),
+        augment=True,
+    )
+    coronal = MedDataset(
+        os.path.join(train_dir, "coronal"),
+        os.path.join(train_dir, "label", "coronal.csv"),
+        augment=True,
+    )
+    sagittal = MedDataset(
+        os.path.join(train_dir, "sagittal"),
+        os.path.join(train_dir, "label", "sagittal.csv"),
+        augment=True,
+    )
+    loader = DataLoader(ConcatDataset([axial, coronal]), batch_size=64, shuffle=True)
+    opt = torch.optim.AdamW(model.parameters(), lr=1e-3)
+    for _ in range(pre_epochs):
+        model.train()
+        for img, lbl in loader:
+            opt.zero_grad()
+            F.cross_entropy(model(img.to(device)), lbl.to(device)).backward()
+            opt.step()
+    ewc = EWC(model, DataLoader(ConcatDataset([axial, coronal]), batch_size=32), device)
+    loader = DataLoader(sagittal, batch_size=32, shuffle=True)
+    opt = torch.optim.AdamW(model.parameters(), lr=1e-4)
+    for epoch in range(ft_epochs):
+        model.train()
+        for img, lbl in loader:
+            opt.zero_grad()
+            (
+                F.cross_entropy(model(img.to(device)), lbl.to(device))
+                + lam * ewc.penalty(model)
+            ).backward()
+            opt.step()
         if (epoch + 1) % 10 == 0:
-            print(
-                f"  Epoch [{epoch+1}/{epochs}] Loss: {total_loss/len(train_loader):.4f}, Acc: {correct/total*100:.2f}%"
-            )
-
-    return model
-
-
-# ══════════════════════════════════════════════════════════
-# 2. Main Entry Point
-# ══════════════════════════════════════════════════════════
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--train_dir", required=True)
-    parser.add_argument("--pretrain_epochs", type=int, default=100)
-    parser.add_argument("--ft_epochs", type=int, default=100)
-    parser.add_argument("--ewc_lambda", type=float, default=1000.0)
-    parser.add_argument("--lr", type=float, default=1e-4)
-    args = parser.parse_args()
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    # 1. Load Data
-    print("Loading datasets...")
-    axial = load_domain(
-        os.path.join(args.train_dir, "axial"),
-        os.path.join(args.train_dir, "label", "axial.csv"),
-        augment=True,
-    )
-    coronal = load_domain(
-        os.path.join(args.train_dir, "coronal"),
-        os.path.join(args.train_dir, "label", "coronal.csv"),
-        augment=True,
-    )
-    sagittal = load_domain(
-        os.path.join(args.train_dir, "sagittal"),
-        os.path.join(args.train_dir, "label", "sagittal.csv"),
-        augment=True,
-    )
-
-    axial_eval = load_domain(
-        os.path.join(args.train_dir, "axial"),
-        os.path.join(args.train_dir, "label", "axial.csv"),
-        augment=False,
-    )
-    coronal_eval = load_domain(
-        os.path.join(args.train_dir, "coronal"),
-        os.path.join(args.train_dir, "label", "coronal.csv"),
-        augment=False,
-    )
-    sagittal_eval = load_domain(
-        os.path.join(args.train_dir, "sagittal"),
-        os.path.join(args.train_dir, "label", "sagittal.csv"),
-        augment=False,
-    )
-
-    # 2. Pre-training on Source Domains (A + C)
-    print("\n[Step 1] Pre-training on Axial + Coronal...")
-    model = build_model(num_classes=11, channels=64, modes=12).to(device)
-    source_dataset = ConcatDataset([axial, coronal])
-    source_loader = DataLoader(source_dataset, batch_size=64, shuffle=True)
-
-    # (Pre-training loop 생략 - 기존 train.py의 pretrain 함수 활용 가능)
-    # 여기서는 데모를 위해 직접 간단히 구현하거나 기존 함수를 호출
-    from train import pretrain
-
-    model = pretrain(
-        model, axial, coronal, device, epochs=args.pretrain_epochs, lr=1e-3
-    )
-
-    # 3. Calculate Fisher Information Matrix (FIM)
-    print("\n[Step 2] Calculating Fisher Information Matrix for Source Domains...")
-    # FIM 계산 시에는 augmentation이 없는 eval 데이터셋 사용 권장
-    fisher_loader = DataLoader(
-        ConcatDataset([axial_eval, coronal_eval]), batch_size=32, shuffle=False
-    )
-    ewc = EWC(model, fisher_loader, device)
-
-    # 4. Fine-tuning on Target Domain (S) with EWC
-    target_loader = DataLoader(sagittal, batch_size=32, shuffle=True)
-    model = train_with_ewc(
-        model,
-        target_loader,
-        ewc,
-        device,
-        epochs=args.ft_epochs,
-        lr=args.lr,
-        ewc_lambda=args.ewc_lambda,
-    )
-
-    # 5. Final Evaluation
-    print("\n[Step 4] Final Evaluation (F1 Score)...")
-    evaluate_all(model, axial_eval, coronal_eval, sagittal_eval, device)
-
-    torch.save(model.state_dict(), "ewc_fno_final.pth")
+            print(f"FT Epoch {epoch+1} done.")
+    torch.save(model.state_dict(), "model.pth")
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--train_dir", required=True)
+    args = parser.parse_args()
+    train_ewc(
+        args.train_dir, torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    )

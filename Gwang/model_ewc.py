@@ -1,44 +1,120 @@
-﻿import torch
+﻿import math
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-class EWC(object):
-    def __init__(self, model: nn.Module, dataloader: torch.utils.data.DataLoader, device: torch.device):
-        self.model = model
-        self.dataloader = dataloader
-        self.device = device
-        
-        # 최적 가중치 저장 (Source Domain 학습 후)
-        self.params = {n: p.clone().detach() for n, p in self.model.named_parameters() if p.requires_grad}
-        self._fisher_matrices = self._diag_fisher()
 
-    def _diag_fisher(self):
-        precision_matrices = {}
-        for n, p in self.params.items():
-            precision_matrices[n] = torch.zeros_like(p)
+class SpectralConv2d(nn.Module):
+    def __init__(self, in_channels, out_channels, modes):
+        super().__init__()
+        self.in_channels, self.out_channels, self.modes = (
+            in_channels,
+            out_channels,
+            int(modes),
+        )
+        scale = 1.0 / (in_channels * out_channels)
+        self.weights1_real = nn.Parameter(
+            scale * torch.randn(in_channels, out_channels, modes, modes)
+        )
+        self.weights1_imag = nn.Parameter(
+            scale * torch.randn(in_channels, out_channels, modes, modes)
+        )
+        self.weights2_real = nn.Parameter(
+            scale * torch.randn(in_channels, out_channels, modes, modes)
+        )
+        self.weights2_imag = nn.Parameter(
+            scale * torch.randn(in_channels, out_channels, modes, modes)
+        )
 
-        self.model.eval()
-        for imgs, lbls in self.dataloader:
-            self.model.zero_grad()
-            imgs = imgs.to(self.device)
-            # FIM 계산을 위해 log-likelihood의 gradient 사용
-            output = self.model(imgs)
-            # 여기서는 CrossEntropy를 사용하여 log-likelihood를 근사
-            loss = F.cross_entropy(output, lbls.to(self.device))
-            loss.backward()
+    @staticmethod
+    def complex_mul2d_safe(x_ft, w_real, w_imag):
+        xr, xi = x_ft.real, x_ft.imag
+        return torch.complex(
+            torch.einsum("bixy,ioxy->boxy", xr, w_real)
+            - torch.einsum("bixy,ioxy->boxy", xi, w_imag),
+            torch.einsum("bixy,ioxy->boxy", xr, w_imag)
+            + torch.einsum("bixy,ioxy->boxy", xi, w_real),
+        )
 
-            for n, p in self.model.named_parameters():
-                if p.requires_grad:
-                    precision_matrices[n].data += p.grad.data ** 2 / len(self.dataloader)
+    def forward(self, x):
+        bsz, _, h, w = x.shape
+        x_ft = torch.fft.rfft2(x, norm="ortho")
+        out_ft = torch.zeros(
+            bsz, self.out_channels, h, w // 2 + 1, dtype=x_ft.dtype, device=x.device
+        )
+        m = min(self.modes, h // 2, w // 2 + 1)
+        if m > 0:
+            out_ft[:, :, :m, :m] = self.complex_mul2d_safe(
+                x_ft[:, :, :m, :m],
+                self.weights1_real[:, :, :m, :m],
+                self.weights1_imag[:, :, :m, :m],
+            )
+            out_ft[:, :, -m:, :m] = self.complex_mul2d_safe(
+                x_ft[:, :, -m:, :m],
+                self.weights2_real[:, :, :m, :m],
+                self.weights2_imag[:, :, :m, :m],
+            )
+        return torch.fft.irfft2(out_ft, s=(h, w), norm="ortho")
 
-        precision_matrices = {n: p for n, p in precision_matrices.items()}
-        return precision_matrices
 
-    def penalty(self, model: nn.Module):
-        loss = 0
-        for n, p in model.named_parameters():
-            if p.requires_grad:
-                _loss = self._fisher_matrices[n] * (p - self.params[n]) ** 2
-                loss += _loss.sum()
-        return loss
+class FNOBlock(nn.Module):
+    def __init__(self, channels, modes, dropout=0.0, residual_scale=0.5):
+        super().__init__()
+        self.spectral = SpectralConv2d(channels, channels, modes)
+        self.bypass = nn.Conv2d(channels, channels, kernel_size=1)
+        self.norm = nn.BatchNorm2d(channels)
+        self.dropout = nn.Dropout2d(dropout) if dropout > 0 else nn.Identity()
+        self.residual_scale = residual_scale
 
+    def forward(self, x):
+        return x + self.residual_scale * self.dropout(
+            F.gelu(self.norm(self.spectral(x) + self.bypass(x)))
+        )
+
+
+class HybridFNONet(nn.Module):
+    def __init__(self, num_classes=11, channels=64, modes=12, classifier_dropout=0.3):
+        super().__init__()
+        self.lifting = nn.Sequential(
+            nn.Conv2d(3, channels, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(channels),
+            nn.GELU(),
+        )
+        self.fno1, self.fno2 = FNOBlock(channels, modes), FNOBlock(channels, modes)
+        self.spatial_refine = nn.Sequential(
+            nn.Conv2d(channels, channels, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(channels),
+            nn.GELU(),
+        )
+        self.feature_expand = nn.Sequential(
+            nn.Conv2d(
+                channels, channels * 2, kernel_size=3, stride=2, padding=1, bias=False
+            ),
+            nn.BatchNorm2d(channels * 2),
+            nn.GELU(),
+        )
+        self.classifier = nn.Sequential(
+            nn.Linear(channels * 2, channels * 2),
+            nn.GELU(),
+            nn.Dropout(classifier_dropout),
+            nn.Linear(channels * 2, num_classes),
+        )
+
+    def forward(self, x):
+        b, _, h, w = x.shape
+        grid_h = (
+            torch.linspace(-1, 1, h).view(1, 1, h, 1).expand(b, 1, h, w).to(x.device)
+        )
+        grid_w = (
+            torch.linspace(-1, 1, w).view(1, 1, 1, w).expand(b, 1, h, w).to(x.device)
+        )
+        x = torch.cat([x, grid_h, grid_w], dim=1)
+        return self.classifier(
+            self.feature_expand(
+                self.spatial_refine(self.fno2(self.fno1(self.lifting(x))))
+            ).mean(dim=(2, 3))
+        )
+
+
+def build_model(num_classes=11, channels=64, modes=12):
+    return HybridFNONet(num_classes=num_classes, channels=channels, modes=modes)
