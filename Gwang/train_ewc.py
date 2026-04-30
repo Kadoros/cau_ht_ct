@@ -4,7 +4,7 @@ import argparse
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, ConcatDataset
-
+from model import build_model
 from train import (
     load_domain,
     evaluate_all,
