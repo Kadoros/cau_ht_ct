@@ -5,9 +5,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, ConcatDataset
 
-# [핵심] 우리가 최적화한 최신 모델과 검증용 유틸리티들 임포트
-from model_san1 import build_model
-from train_san2 import (
+from train import (
     load_domain,
     evaluate_all,
     stratified_split_indices,
