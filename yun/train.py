@@ -4,7 +4,7 @@ Fixed full pipeline with Focal Loss, Cutout, and 8:2 Early Stopping.
 """
 
 import os, math, copy, argparse, random
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Sequence
 
 import numpy as np
 import pandas as pd
