@@ -22,8 +22,8 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 
 # 모델 수정 없이 그대로 임포트
-from model_san1 import build_model
-from train_san2 import (
+from model import build_model
+from train import (
     load_domain,
     evaluate_all,
     stratified_split_indices,
