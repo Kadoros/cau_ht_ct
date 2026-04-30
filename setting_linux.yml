@@ -1,13 +1,16 @@
 name: CT
 channels:
   - pytorch
+  - nvidia
   - conda-forge
   - defaults
 dependencies:
-  - python=3.10
+  - python=3.10.12  # 3.10.x 규격 준수
   - pytorch=2.1.2
   - torchvision=0.16.2
-  - numpy<2
+  - pytorch-cuda=12.1  # CUDA 12.1 필수 명시
+  - numpy=1.26.4       # numpy 2.x 방지를 위해 버전 고정
   - pandas
   - scikit-learn
   - nibabel
+  - pip
