@@ -20,7 +20,7 @@ from torch.utils.data import Dataset, DataLoader
 
 # 앞서 사용하던 모델 아키텍처와 DANN 컴포넌트 임포트
 from model_dann import build_model, GradientReversalLayer, DomainDiscriminator
-from train_san2 import (
+from train import (
     MedDataset,
     MedSubset,
     _affine_tensor,
