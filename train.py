@@ -1,32 +1,37 @@
+"""
+train.py
+Few-shot domain generalization pipeline for the CAU medical-AI hackathon.
+(RTX 3090 Optimized Version)
+"""
+
+from __future__ import annotations
+
 import os
+import math
 import copy
 import argparse
+import random
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+
 import numpy as np
+import pandas as pd
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import Dataset, DataLoader, Subset
-from torch.func import functional_call
-from model import build_model
+from torch.utils.data import Dataset, DataLoader
+from torchvision.io import read_image, ImageReadMode
+
+try:
+    from torch.func import functional_call
+except ImportError:
+    from torch.nn.utils.stateless import functional_call
+
+from model_san1 import build_model
+
 
 # ══════════════════════════════════════════════════════════
-# 0. Dataset & Helpers
+# 0. Dataset & Augmentation
 # ══════════════════════════════════════════════════════════
-
-
-def _rotate_tensor(img, angle_deg):
-    angle_rad = torch.tensor(angle_deg * np.pi / 180.0)
-    cos_a, sin_a = torch.cos(angle_rad), torch.sin(angle_rad)
-    theta = torch.tensor([[cos_a, -sin_a, 0], [sin_a, cos_a, 0]], dtype=torch.float32)
-    grid = F.affine_grid(
-        theta.unsqueeze(0), img.unsqueeze(0).shape, align_corners=False
-    )
-    rotated = F.grid_sample(
-        img.unsqueeze(0), grid, align_corners=False, mode="bilinear"
-    )
-    return rotated.squeeze(0)
-
-
 class MedDataset(Dataset):
     CLASS_NAMES = [
         "bladder",
@@ -42,267 +47,864 @@ class MedDataset(Dataset):
         "spleen",
     ]
 
-    def __init__(self, image_dir, label_csv, augment=False):
-        import pandas as pd
-        from PIL import Image as PILImage
-
+    def __init__(self, image_dir: str, label_csv: str, augment: bool = False):
         self.image_dir = image_dir
         self.augment = augment
+
         raw = pd.read_csv(label_csv, index_col=0, dtype=str)
         raw = raw[raw.index != "Index"]
+
+        missing = [c for c in self.CLASS_NAMES if c not in raw.columns]
+        if missing:
+            raise ValueError(f"Missing class columns in CSV: {missing}")
+
         one_hot = raw[self.CLASS_NAMES].astype(int).values
-        self.labels = torch.tensor(one_hot.argmax(axis=1), dtype=torch.long)
+        labels = one_hot.argmax(axis=1)
+        filenames = raw.index.tolist()
+        fname_to_label = {fn: int(lbl) for fn, lbl in zip(filenames, labels)}
+
+        all_pngs = sorted(
+            [f for f in os.listdir(image_dir) if f.lower().endswith(".png")]
+        )
+        self.image_paths: List[str] = []
+        self.labels_list: List[int] = []
+        for fn in all_pngs:
+            key = os.path.splitext(fn)[0]
+            if key in fname_to_label:
+                self.image_paths.append(os.path.join(image_dir, fn))
+                self.labels_list.append(fname_to_label[key])
+
+        if len(self.image_paths) == 0:
+            raise RuntimeError(f"No images matched between {image_dir} and {label_csv}")
 
         imgs = []
-        filenames = sorted([f for f in os.listdir(image_dir) if f.endswith(".png")])
-        for fn in filenames:
-            img = (
-                PILImage.open(os.path.join(image_dir, fn)).convert("L").resize((28, 28))
-            )
-            imgs.append(np.array(img, dtype=np.float32) / 255.0)
-        self.imgs = torch.from_numpy(np.stack(imgs))[:, None, :, :]
-        self.imgs = (self.imgs - 0.5) / 0.5
+        for path in self.image_paths:
+            img = read_image(path, mode=ImageReadMode.GRAY).float()
+            if img.shape[-2:] != (28, 28):
+                img = F.interpolate(
+                    img.unsqueeze(0),
+                    size=(28, 28),
+                    mode="bilinear",
+                    align_corners=False,
+                ).squeeze(0)
 
-    def __len__(self):
+            img_min, img_max = img.min(), img.max()
+            if img_max > img_min:
+                img = (img - img_min) / (img_max - img_min)
+            else:
+                img = torch.zeros_like(img)
+
+            img = (img - 0.5) / 0.5
+            imgs.append(img)
+
+        self.imgs = torch.stack(imgs).contiguous()
+        self.labels = torch.tensor(self.labels_list, dtype=torch.long)
+        print(f"    Loaded {len(self.labels)} images from {image_dir}")
+
+    def __len__(self) -> int:
         return len(self.labels)
 
-    def __getitem__(self, idx):
-        img, lbl = self.imgs[idx].clone(), self.labels[idx]
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        img = self.imgs[idx].clone()
+        lbl = self.labels[idx]
         if self.augment:
-            if torch.rand(1) < 0.5:
-                img = _rotate_tensor(img, (torch.rand(1).item() - 0.5) * 20)
-            if torch.rand(1) < 0.5:
-                img = (
-                    img * (0.8 + torch.rand(1).item() * 0.4)
-                    + (torch.rand(1).item() - 0.5) * 0.1
-                ).clamp(-1, 1)
+            img = self._augment(img)
+        return img, lbl
+
+    def _augment(self, img: torch.Tensor) -> torch.Tensor:
+        if torch.rand(()) < 0.55:
+            angle = (torch.rand(()).item() - 0.5) * 24.0
+            tx = int(torch.randint(-1, 2, ()).item())
+            ty = int(torch.randint(-1, 2, ()).item())
+            scale = 0.95 + torch.rand(()).item() * 0.10
+            img = _affine_tensor(
+                img, angle_deg=angle, translate_px=(tx, ty), scale=scale
+            )
+        if torch.rand(()) < 0.65:
+            alpha = 0.85 + torch.rand(()).item() * 0.30
+            beta = (torch.rand(()).item() - 0.5) * 0.16
+            img = img * alpha + beta
+        if torch.rand(()) < 0.30:
+            img = img + torch.randn_like(img) * 0.025
+        return img.clamp(-1.0, 1.0)
+
+
+class MedSubset(Dataset):
+    def __init__(self, base: MedDataset, indices: Sequence[int], augment: bool = False):
+        self.base = base
+        self.indices = torch.as_tensor(indices, dtype=torch.long)
+        self.augment = augment
+        self.labels = base.labels[self.indices]
+
+    def __len__(self) -> int:
+        return len(self.indices)
+
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        base_idx = int(self.indices[idx].item())
+        img = self.base.imgs[base_idx].clone()
+        lbl = self.base.labels[base_idx]
+        if self.augment:
+            img = self.base._augment(img)
         return img, lbl
 
 
-def load_domain(image_dir, label_csv, augment=False):
+def _affine_tensor(
+    img: torch.Tensor,
+    angle_deg: float,
+    translate_px: Tuple[int, int] = (0, 0),
+    scale: float = 1.0,
+) -> torch.Tensor:
+    _, h, w = img.shape
+    angle = math.radians(angle_deg)
+    cos_a, sin_a = math.cos(angle) / scale, math.sin(angle) / scale
+    tx, ty = 2.0 * translate_px[0] / max(w, 1), 2.0 * translate_px[1] / max(h, 1)
+    theta = torch.tensor(
+        [[cos_a, -sin_a, tx], [sin_a, cos_a, ty]], dtype=img.dtype, device=img.device
+    )
+    grid = F.affine_grid(
+        theta.unsqueeze(0), img.unsqueeze(0).shape, align_corners=False
+    )
+    return F.grid_sample(
+        img.unsqueeze(0),
+        grid,
+        align_corners=False,
+        mode="bilinear",
+        padding_mode="border",
+    ).squeeze(0)
+
+
+def load_domain(image_dir: str, label_csv: str, augment: bool = False) -> MedDataset:
     return MedDataset(image_dir, label_csv, augment=augment)
 
 
-# ══════════════════════════════════════════════════════════
-# 1. Training & Meta-Learning Functions
-# ══════════════════════════════════════════════════════════
+def stratified_split_indices(
+    labels: torch.Tensor, val_per_class: int = 10, seed: int = 42
+) -> Tuple[List[int], List[int]]:
+    rng = np.random.default_rng(seed)
+    labels_np = labels.cpu().numpy()
+    train_idx, val_idx = [], []
+    for cls in range(11):
+        idx = np.where(labels_np == cls)[0]
+        rng.shuffle(idx)
+        if len(idx) == 0:
+            continue
+        n_val = min(val_per_class, max(1, len(idx) // 5))
+        if len(idx) - n_val < 1:
+            n_val = max(0, len(idx) - 1)
+        val_idx.extend(idx[:n_val].tolist())
+        train_idx.extend(idx[n_val:].tolist())
+    rng.shuffle(train_idx)
+    rng.shuffle(val_idx)
+    return train_idx, val_idx
 
 
+# ══════════════════════════════════════════════════════════
+# 1. Pre-training on Source Domains (A + C)
+# ══════════════════════════════════════════════════════════
 def pretrain(
-    model, axial_dataset, coronal_dataset, device, epochs=40, batch_size=64, lr=1e-3
-):
+    model: nn.Module,
+    axial_dataset: Dataset,
+    coronal_dataset: Dataset,
+    device: torch.device,
+    epochs: int = 200,
+    batch_size: int = 64,
+    lr: float = 1e-3,
+) -> nn.Module:
     print("\n[Step 1] Pre-training on Axial + Coronal...")
+
     combined = torch.utils.data.ConcatDataset([axial_dataset, coronal_dataset])
-    loader = DataLoader(combined, batch_size=batch_size, shuffle=True)
+    loader = DataLoader(
+        combined,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=4,
+        pin_memory=True,
+        drop_last=False,
+    )
+
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
-    criterion = nn.CrossEntropyLoss(label_smoothing=0.05)
-    model.train()
+    # [핵심] 고속 수렴 및 일반화 성능을 높이는 OneCycleLR
+    scheduler = torch.optim.lr_scheduler.OneCycleLR(
+        optimizer, max_lr=lr, steps_per_epoch=len(loader), epochs=epochs
+    )
+
+    # [핵심] Label Smoothing 강화로 오버피팅 억제
+    criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
+
+    model.to(device)
+    best_loss = float("inf")
+    best_state = copy.deepcopy(model.state_dict())
+
     for epoch in range(epochs):
+        model.train()
+        total_loss, correct, total = 0.0, 0, 0
+
         for imgs, lbls in loader:
             imgs, lbls = imgs.to(device), lbls.to(device)
-            optimizer.zero_grad()
+            optimizer.zero_grad(set_to_none=True)
             logits = model(imgs)
             loss = criterion(logits, lbls)
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
-        scheduler.step()
-        if (epoch + 1) % 5 == 0:  # 5에폭마다 출력
-            print(f"  Epoch [{epoch+1}/{epochs}] Last Loss: {loss.item():.4f}")
+            scheduler.step()  # OneCycleLR은 배치마다 호출
+
+            bs = len(lbls)
+            total_loss += loss.item() * bs
+            correct += (logits.argmax(1) == lbls).sum().item()
+            total += bs
+
+        avg_loss = total_loss / max(total, 1)
+        acc = correct / max(total, 1) * 100.0
+
+        if avg_loss < best_loss:
+            best_loss = avg_loss
+            best_state = copy.deepcopy(model.state_dict())
+
+        if (epoch + 1) % 10 == 0 or epoch == 0:
+            print(f"  Epoch [{epoch+1:3d}/{epochs}] loss={avg_loss:.4f} acc={acc:.1f}%")
+
+    model.load_state_dict(best_state)
+    print(f"  Pre-training done. Best loss: {best_loss:.4f}")
     return model
 
 
+# ══════════════════════════════════════════════════════════
+# 2. FOMAML Meta-Learning
+# ══════════════════════════════════════════════════════════
 class TaskSampler:
-    def __init__(self, dataset, n_way=11, k_shot=5, q_query=15):
+    def __init__(
+        self, dataset: Dataset, n_way: int = 11, k_shot: int = 5, q_query: int = 10
+    ):
         self.dataset = dataset
-        labels = (
-            dataset.labels
-            if hasattr(dataset, "labels")
-            else torch.cat([d.labels for d in dataset.datasets])
+        self.n_way = n_way
+        self.k_shot = k_shot
+        self.q_query = q_query
+        self.class_indices = _build_class_indices(dataset.labels)
+        self.classes = list(self.class_indices.keys())
+
+    def sample_task(self, device: torch.device):
+        n = min(self.n_way, len(self.classes))
+        chosen_classes = np.random.choice(self.classes, size=n, replace=False)
+        support_imgs, support_lbls, query_imgs, query_lbls = [], [], [], []
+
+        for cls in chosen_classes:
+            idx = self.class_indices[int(cls)]
+            needed = self.k_shot + self.q_query
+            replace = len(idx) < needed
+            chosen = np.random.choice(idx, size=needed, replace=replace)
+            for i in chosen[: self.k_shot]:
+                img, _ = self.dataset[int(i)]
+                support_imgs.append(img)
+                support_lbls.append(int(cls))
+            for i in chosen[self.k_shot :]:
+                img, _ = self.dataset[int(i)]
+                query_imgs.append(img)
+                query_lbls.append(int(cls))
+
+        return _stack_task(support_imgs, support_lbls, query_imgs, query_lbls, device)
+
+
+class CrossDomainTaskSampler:
+    def __init__(
+        self,
+        support_dataset: Dataset,
+        query_dataset: Dataset,
+        n_way: int = 11,
+        k_shot: int = 5,
+        q_query: int = 10,
+    ):
+        self.support_dataset = support_dataset
+        self.query_dataset = query_dataset
+        self.n_way = n_way
+        self.k_shot = k_shot
+        self.q_query = q_query
+        self.support_indices = _build_class_indices(support_dataset.labels)
+        self.query_indices = _build_class_indices(query_dataset.labels)
+        self.classes = sorted(
+            set(self.support_indices.keys()) & set(self.query_indices.keys())
         )
-        self.class_indices = {i: np.where(labels.numpy() == i)[0] for i in range(11)}
 
-    def sample_task(self, device):
-        s_imgs, s_lbls, q_imgs, q_lbls = [], [], [], []
-        for new_lbl in range(11):
-            idx = np.random.choice(self.class_indices[new_lbl], 20, replace=False)
-            for i in idx[:5]:
-                img, _ = self.dataset[i]
-                s_imgs.append(img)
-                s_lbls.append(new_lbl)
-            for i in idx[5:]:
-                img, _ = self.dataset[i]
-                q_imgs.append(img)
-                q_lbls.append(new_lbl)
-        return (
-            torch.stack(s_imgs).to(device),
-            torch.tensor(s_lbls).to(device),
-            torch.stack(q_imgs).to(device),
-            torch.tensor(q_lbls).to(device),
-        )
+    def sample_task(self, device: torch.device):
+        n = min(self.n_way, len(self.classes))
+        chosen_classes = np.random.choice(self.classes, size=n, replace=False)
+        support_imgs, support_lbls, query_imgs, query_lbls = [], [], [], []
+        for cls in chosen_classes:
+            s_idx = self.support_indices[int(cls)]
+            q_idx = self.query_indices[int(cls)]
+            s_chosen = np.random.choice(
+                s_idx, size=self.k_shot, replace=len(s_idx) < self.k_shot
+            )
+            q_chosen = np.random.choice(
+                q_idx, size=self.q_query, replace=len(q_idx) < self.q_query
+            )
+
+            for i in s_chosen:
+                img, _ = self.support_dataset[int(i)]
+                support_imgs.append(img)
+                support_lbls.append(int(cls))
+            for i in q_chosen:
+                img, _ = self.query_dataset[int(i)]
+                query_imgs.append(img)
+                query_lbls.append(int(cls))
+
+        return _stack_task(support_imgs, support_lbls, query_imgs, query_lbls, device)
 
 
-def fomaml_step(model, task_sampler, device, inner_lr=0.01, inner_steps=3, n_tasks=4):
-    criterion = nn.CrossEntropyLoss()
-    params = {n: p for n, p in model.named_parameters() if p.requires_grad}
-    meta_grads = {n: torch.zeros_like(p) for n, p in params.items()}
+def _build_class_indices(labels: torch.Tensor) -> Dict[int, np.ndarray]:
+    labels_np = labels.cpu().numpy()
+    out: Dict[int, np.ndarray] = {}
+    for cls in range(11):
+        idx = np.where(labels_np == cls)[0]
+        if len(idx) > 0:
+            out[cls] = idx
+    return out
+
+
+def _stack_task(support_imgs, support_lbls, query_imgs, query_lbls, device):
+    return (
+        torch.stack(support_imgs).to(device),
+        torch.tensor(support_lbls, dtype=torch.long, device=device),
+        torch.stack(query_imgs).to(device),
+        torch.tensor(query_lbls, dtype=torch.long, device=device),
+    )
+
+
+def _forward_with_weights(
+    model: nn.Module, x: torch.Tensor, weights: Dict[str, torch.Tensor]
+) -> torch.Tensor:
+    buffers = dict(model.named_buffers())
+    state = {**buffers, **weights}
+    return functional_call(model, state, (x,))
+
+
+def fomaml_step(
+    model: nn.Module,
+    task_sampler,
+    device: torch.device,
+    inner_lr: float = 0.02,
+    inner_steps: int = 2,
+    n_tasks: int = 4,
+) -> float:
+    criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
+    meta_grads: Dict[str, torch.Tensor] = {
+        name: torch.zeros_like(param, device=device)
+        for name, param in model.named_parameters()
+        if param.requires_grad
+    }
     total_q_loss = 0.0
+
     for _ in range(n_tasks):
         s_imgs, s_lbls, q_imgs, q_lbls = task_sampler.sample_task(device)
-        fast_params = {n: p.clone() for n, p in params.items()}
-        for _s in range(inner_steps):
-            logits = functional_call(model, fast_params, (s_imgs,))
+        fast_weights: Dict[str, torch.Tensor] = {
+            name: param.detach().clone().requires_grad_(True)
+            for name, param in model.named_parameters()
+            if param.requires_grad
+        }
+
+        for _step in range(inner_steps):
+            logits = _forward_with_weights(model, s_imgs, fast_weights)
             loss = criterion(logits, s_lbls)
-            grads = torch.autograd.grad(loss, fast_params.values(), allow_unused=True)
-            fast_params = {
-                n: p - inner_lr * g if g is not None else p
-                for (n, p), g in zip(fast_params.items(), grads)
-            }
-        q_logits = functional_call(model, fast_params, (q_imgs,))
+            grads = torch.autograd.grad(
+                loss,
+                tuple(fast_weights.values()),
+                create_graph=False,
+                retain_graph=False,
+                allow_unused=True,
+            )
+            updated: Dict[str, torch.Tensor] = {}
+            for (name, weight), grad in zip(fast_weights.items(), grads):
+                if grad is None:
+                    updated[name] = weight.detach().clone().requires_grad_(True)
+                else:
+                    updated[name] = (
+                        (weight - inner_lr * grad).detach().clone().requires_grad_(True)
+                    )
+            fast_weights = updated
+
+        q_logits = _forward_with_weights(model, q_imgs, fast_weights)
         q_loss = criterion(q_logits, q_lbls)
         total_q_loss += q_loss.item()
-        q_grads = torch.autograd.grad(q_loss, params.values(), allow_unused=True)
-        for (n, _), g in zip(params.items(), q_grads):
-            if g is not None:
-                meta_grads[n] += g / n_tasks
-    for n, p in params.items():
-        p.grad = meta_grads[n]
-    return total_q_loss / n_tasks
+
+        q_grads = torch.autograd.grad(
+            q_loss,
+            tuple(fast_weights.values()),
+            create_graph=False,
+            retain_graph=False,
+            allow_unused=True,
+        )
+        for (name, _), grad in zip(fast_weights.items(), q_grads):
+            if grad is not None:
+                meta_grads[name] += grad.detach()
+
+    for name, param in model.named_parameters():
+        if param.requires_grad and name in meta_grads:
+            param.grad = meta_grads[name] / float(max(n_tasks, 1))
+
+    return total_q_loss / float(max(n_tasks, 1))
 
 
-def meta_train(model, axial, coronal, device, meta_epochs=30):
-    print("\n[Step 2] FOMAML Meta-training...")
-    combined = torch.utils.data.ConcatDataset([axial, coronal])
-    sampler = TaskSampler(combined)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+def meta_train(
+    model: nn.Module,
+    axial_dataset: Dataset,
+    coronal_dataset: Dataset,
+    device: torch.device,
+    meta_epochs: int = 40,
+    meta_lr: float = 5e-4,
+    inner_lr: float = 0.02,
+    inner_steps: int = 2,
+    n_tasks: int = 4,
+    k_shot: int = 5,
+    q_query: int = 10,
+) -> nn.Module:
+    print("\n[Step 2] FOMAML meta-training on Axial + Coronal...")
+    samplers = [
+        CrossDomainTaskSampler(
+            axial_dataset, coronal_dataset, n_way=11, k_shot=k_shot, q_query=q_query
+        ),
+        CrossDomainTaskSampler(
+            coronal_dataset, axial_dataset, n_way=11, k_shot=k_shot, q_query=q_query
+        ),
+        TaskSampler(axial_dataset, n_way=11, k_shot=k_shot, q_query=q_query),
+        TaskSampler(coronal_dataset, n_way=11, k_shot=k_shot, q_query=q_query),
+    ]
+
+    meta_optimizer = torch.optim.AdamW(
+        model.parameters(), lr=meta_lr, weight_decay=1e-5
+    )
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        meta_optimizer, T_max=max(1, meta_epochs)
+    )
+    model.to(device)
+
     for epoch in range(meta_epochs):
-        q_loss = fomaml_step(model, sampler, device)
-        optimizer.step()
-        if (epoch + 1) % 10 == 0:
-            print(f"  Meta-epoch [{epoch+1}/{meta_epochs}] q_loss={q_loss:.4f}")
+        model.train()
+        meta_optimizer.zero_grad(set_to_none=True)
+        sampler = samplers[epoch % len(samplers)]
+        q_loss = fomaml_step(
+            model,
+            sampler,
+            device,
+            inner_lr=inner_lr,
+            inner_steps=inner_steps,
+            n_tasks=n_tasks,
+        )
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        meta_optimizer.step()
+        scheduler.step()
+
+        if (epoch + 1) % 10 == 0 or epoch == 0:
+            print(f"  Meta-epoch [{epoch+1:3d}/{meta_epochs}] query_loss={q_loss:.4f}")
+
+    print("  Meta-training done.")
     return model
 
 
-def finetune_l2sp(model, dataset, device, epochs=50, batch_size=32, lr=2e-4, lam=0.05):
-    print(f"\n[Step 3] Fine-tuning on Sagittal (λ={lam})...")
-    theta_meta = {n: p.clone().detach() for n, p in model.named_parameters()}
-    loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
-    criterion = nn.CrossEntropyLoss(label_smoothing=0.05)
+# ══════════════════════════════════════════════════════════
+# 3. Few-shot Fine-tuning on Sagittal with L2-SP
+# ══════════════════════════════════════════════════════════
+def finetune_l2sp(
+    model: nn.Module,
+    sagittal_dataset: Dataset,
+    device: torch.device,
+    epochs: int = 120,
+    batch_size: int = 32,
+    lr: float = 5e-5,
+    lam: float = 0.05,
+    val_datasets: Optional[Tuple[Dataset, Dataset, Dataset]] = None,
+    eval_every: int = 5,
+) -> Tuple[nn.Module, int]:
+    print(f"\n[Step 3] Fine-tuning on Sagittal with L2-SP (λ={lam:.4f})...")
+    theta_meta = {
+        name: param.detach().clone() for name, param in model.named_parameters()
+    }
+    train_loader = DataLoader(
+        sagittal_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=4,
+        drop_last=False,
+    )
+
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.0)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=max(1, epochs)
+    )
+    criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
+
+    model.to(device)
+    best_state = copy.deepcopy(model.state_dict())
+    best_metric = -float("inf") if val_datasets is not None else float("inf")
+    best_epoch = 1
+
     for epoch in range(epochs):
         model.train()
-        for imgs, lbls in loader:
+        total_loss, correct, total = 0.0, 0, 0
+
+        for imgs, lbls in train_loader:
             imgs, lbls = imgs.to(device), lbls.to(device)
-            optimizer.zero_grad()
+            optimizer.zero_grad(set_to_none=True)
             logits = model(imgs)
-            l2sp = sum(
-                ((p - theta_meta[n].to(device)) ** 2).sum()
-                for n, p in model.named_parameters()
-            )
-            loss = criterion(logits, lbls) + lam * l2sp
+            ce_loss = criterion(logits, lbls)
+            reg = l2sp_penalty(model, theta_meta, device)
+            loss = ce_loss + lam * reg
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
-    return model
+
+            bs = len(lbls)
+            total_loss += loss.item() * bs
+            correct += (logits.argmax(1) == lbls).sum().item()
+            total += bs
+
+        scheduler.step()
+        avg_loss = total_loss / max(total, 1)
+        acc = correct / max(total, 1) * 100.0
+
+        if val_datasets is not None and (
+            (epoch + 1) % eval_every == 0 or epoch == epochs - 1
+        ):
+            scores = evaluate_all(model, *val_datasets, device=device, verbose=False)
+            metric = scores["Final"]
+            if metric > best_metric:
+                best_metric = metric
+                best_state = copy.deepcopy(model.state_dict())
+                best_epoch = epoch + 1
+        elif val_datasets is None:
+            if avg_loss < best_metric:
+                best_metric = avg_loss
+                best_state = copy.deepcopy(model.state_dict())
+                best_epoch = epoch + 1
+
+        if (epoch + 1) % 10 == 0 or epoch == 0:
+            val_info = (
+                f" best_val={best_metric:.4f}" if val_datasets is not None else ""
+            )
+            print(
+                f"  FT Epoch [{epoch+1:3d}/{epochs}] loss={avg_loss:.4f} acc={acc:.1f}%{val_info}"
+            )
+
+    model.load_state_dict(best_state)
+    print(f"  Fine-tuning done. Best metric: {best_metric:.4f} at Epoch {best_epoch}")
+    return model, best_epoch
 
 
-def evaluate(model, dataset, device):
+def _l2sp_layer_weight(name: str) -> float:
+    if name.startswith("classifier"):
+        return 0.10
+    if name.startswith("feature_expand"):
+        return 0.20
+    if name.startswith("spatial_refine"):
+        return 0.35
+    if name.startswith("fno2"):
+        return 0.60
+    return 1.00  # lifting + fno1
+
+
+def l2sp_penalty(
+    model: nn.Module, theta_meta: Dict[str, torch.Tensor], device: torch.device
+) -> torch.Tensor:
+    penalty = torch.zeros((), device=device)
+    for name, param in model.named_parameters():
+        if name not in theta_meta:
+            continue
+        anchor = theta_meta[name].to(device)
+        penalty = penalty + _l2sp_layer_weight(name) * torch.sum((param - anchor) ** 2)
+    return penalty
+
+
+# ══════════════════════════════════════════════════════════
+# 4. Evaluation Helper
+# ══════════════════════════════════════════════════════════
+def evaluate(
+    model: nn.Module, dataset: Dataset, device: torch.device, batch_size: int = 128
+) -> float:
     from sklearn.metrics import f1_score
 
-    loader = DataLoader(dataset, batch_size=64, shuffle=False)
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=4)
     model.eval()
+    model.to(device)
+
     all_preds, all_lbls = [], []
     with torch.no_grad():
         for imgs, lbls in loader:
             imgs = imgs.to(device)
-            all_preds.extend(model(imgs).argmax(1).cpu().numpy())
-            all_lbls.extend(lbls.numpy())
-    return f1_score(all_lbls, all_preds, average="macro", zero_division=0)
+            preds = model(imgs).argmax(1).cpu().numpy().tolist()
+            all_preds.extend(preds)
+            all_lbls.extend(lbls.cpu().numpy().tolist())
 
-
-# ══════════════════════════════════════════════════════════
-# 2. Main Process
-# ══════════════════════════════════════════════════════════
-
-
-def parse_args():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--train_dir", required=True)
-    parser.add_argument("--save_path", default="./best_model.pth")
-    parser.add_argument(
-        "--device",
-        default=(
-            "mps"
-            if torch.backends.mps.is_available()
-            else "cuda" if torch.cuda.is_available() else "cpu"
-        ),
+    return float(
+        f1_score(
+            all_lbls,
+            all_preds,
+            labels=list(range(11)),
+            average="macro",
+            zero_division=0,
+        )
     )
-    parser.add_argument("--pretrain_epochs", type=int, default=100)
-    parser.add_argument("--meta_epochs", type=int, default=60)
-    parser.add_argument("--finetune_epochs", type=int, default=250)
-    parser.add_argument("--lambda_val", type=float, default=0.03)
+
+
+def evaluate_all(
+    model: nn.Module,
+    axial_dataset: Dataset,
+    coronal_dataset: Dataset,
+    sagittal_dataset: Dataset,
+    device: torch.device,
+    verbose: bool = True,
+) -> Dict[str, float]:
+    f1_a = evaluate(model, axial_dataset, device)
+    f1_c = evaluate(model, coronal_dataset, device)
+    f1_s = evaluate(model, sagittal_dataset, device)
+    final = 0.7 * f1_s + 0.3 * (f1_a + f1_c) / 2.0
+    scores = {"F1_A": f1_a, "F1_C": f1_c, "F1_S": f1_s, "Final": final}
+    if verbose:
+        print("\n[Evaluation]")
+        print(f"  F1 Axial    (A): {f1_a:.4f}")
+        print(f"  F1 Coronal  (C): {f1_c:.4f}")
+        print(f"  F1 Sagittal (S): {f1_s:.4f}")
+        print(f"  Final Score    : {final:.4f}  (0.7×S + 0.3×(A+C)/2)")
+    return scores
+
+
+# ══════════════════════════════════════════════════════════
+# 5. Lambda Search
+# ══════════════════════════════════════════════════════════
+def parse_lambda_candidates(text: str) -> Tuple[float, ...]:
+    return tuple(float(x.strip()) for x in text.split(",") if x.strip())
+
+
+def search_lambda(
+    model_init_state: Dict[str, torch.Tensor],
+    axial_eval: Dataset,
+    coronal_eval: Dataset,
+    sagittal_train: Dataset,
+    sagittal_val: Dataset,
+    device: torch.device,
+    channels: int,
+    modes: int,
+    finetune_epochs: int,
+    finetune_lr: float,
+    lambdas: Sequence[float],
+) -> Tuple[float, int]:
+    print("\n[Lambda Search on stratified Sagittal validation]")
+    best_lam = float(lambdas[0])
+    best_score = -float("inf")
+    best_epoch_to_use = 40
+
+    for lam in lambdas:
+        model = build_model(num_classes=11, channels=channels, modes=modes)
+        model.load_state_dict(copy.deepcopy(model_init_state))
+
+        model, best_epoch = finetune_l2sp(
+            model,
+            sagittal_train,
+            device,
+            epochs=finetune_epochs,
+            lr=finetune_lr,
+            lam=float(lam),
+            val_datasets=(axial_eval, coronal_eval, sagittal_val),
+            eval_every=5,
+        )
+
+        scores = evaluate_all(
+            model, axial_eval, coronal_eval, sagittal_val, device, verbose=True
+        )
+        if scores["Final"] > best_score:
+            best_score = scores["Final"]
+            best_lam = float(lam)
+            best_epoch_to_use = best_epoch
+
+    print(
+        f"  Best λ = {best_lam:.4f} at Epoch {best_epoch_to_use} (Val Final={best_score:.4f})"
+    )
+    return best_lam, best_epoch_to_use
+
+
+# ══════════════════════════════════════════════════════════
+# 6. Main Entry Point
+# ══════════════════════════════════════════════════════════
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Few-Shot Domain Generalization Training"
+    )
+    parser.add_argument("--train_dir", required=True, help="Root train dir")
+    parser.add_argument("--save_path", default="./model.pth", help="Output model path")
+
+    if torch.cuda.is_available():
+        default_device = "cuda"
+    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        default_device = "mps"
+    else:
+        default_device = "cpu"
+    parser.add_argument("--device", default=default_device)
+
+    # 기본값 3090 풀옵션 튜닝
+    parser.add_argument("--channels", type=int, default=64)
+    parser.add_argument("--modes", type=int, default=12)
+    parser.add_argument("--seed", type=int, default=42)
+
+    parser.add_argument("--pretrain_epochs", type=int, default=200)
+    parser.add_argument("--pretrain_lr", type=float, default=1e-3)
+    parser.add_argument("--meta_epochs", type=int, default=50)
+    parser.add_argument("--meta_lr", type=float, default=5e-4)
+    parser.add_argument("--inner_lr", type=float, default=0.02)
+    parser.add_argument("--inner_steps", type=int, default=2)
+    parser.add_argument("--meta_tasks", type=int, default=4)
+    parser.add_argument("--k_shot", type=int, default=5)
+    parser.add_argument("--q_query", type=int, default=10)
+    parser.add_argument("--skip_meta", action="store_true", help="Skip FOMAML")
+
+    parser.add_argument("--finetune_epochs", type=int, default=160)
+    parser.add_argument("--finetune_lr", type=float, default=5e-5)
+    parser.add_argument("--lambda_val", type=float, default=0.001)
+    parser.add_argument(
+        "--search_lambda", action="store_true", help="Run lambda grid search"
+    )
+    parser.add_argument("--lambda_candidates", default="0.001,0.005,0.01,0.05")
+    parser.add_argument("--val_per_class", type=int, default=10)
     return parser.parse_args()
 
 
-def main():
+def set_seed(seed: int) -> None:
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = True
+
+
+def main() -> None:
     args = parse_args()
+    set_seed(args.seed)
     device = torch.device(args.device)
-    print(f"Using device: {device}")
+
+    print(f"Device: {device}")
+    print(f"Config: channels={args.channels}, modes={args.modes}, λ={args.lambda_val}")
 
     t = args.train_dir
-    axial_train = MedDataset(
+    print("\nLoading datasets...")
+    axial_train = load_domain(
         os.path.join(t, "axial"), os.path.join(t, "label", "axial.csv"), augment=True
     )
-    coronal_train = MedDataset(
+    coronal_train = load_domain(
         os.path.join(t, "coronal"),
         os.path.join(t, "label", "coronal.csv"),
         augment=True,
     )
-
-    # Stratified Split for Sagittal
-    sag_full_no_aug = MedDataset(
-        os.path.join(t, "sagittal"),
-        os.path.join(t, "label", "sagittal.csv"),
-        augment=False,
-    )
-    sag_full_aug = MedDataset(
+    sagittal_full_train = load_domain(
         os.path.join(t, "sagittal"),
         os.path.join(t, "label", "sagittal.csv"),
         augment=True,
     )
 
-    indices = np.arange(len(sag_full_no_aug))
-    train_idx, val_idx = [], []
-    for i in range(11):
-        c_idx = np.where(sag_full_no_aug.labels.numpy() == i)[0]
-        np.random.shuffle(c_idx)
-        val_idx.extend(c_idx[:10])
-        train_idx.extend(c_idx[10:])
+    axial_eval = load_domain(
+        os.path.join(t, "axial"), os.path.join(t, "label", "axial.csv"), augment=False
+    )
+    coronal_eval = load_domain(
+        os.path.join(t, "coronal"),
+        os.path.join(t, "label", "coronal.csv"),
+        augment=False,
+    )
+    sagittal_eval = load_domain(
+        os.path.join(t, "sagittal"),
+        os.path.join(t, "label", "sagittal.csv"),
+        augment=False,
+    )
 
-    sag_train = Subset(sag_full_aug, train_idx)
-    sag_val = Subset(sag_full_no_aug, val_idx)
+    print(f"  Axial   : {len(axial_train)} samples")
+    print(f"  Coronal : {len(coronal_train)} samples")
+    print(f"  Sagittal: {len(sagittal_full_train)} samples")
 
-    model = build_model(channels=64, modes=12).to(device)
+    model = build_model(num_classes=11, channels=args.channels, modes=args.modes)
+    total_params = sum(p.numel() for p in model.parameters())
+    print(f"\nModel params: {total_params:,}")
+
     model = pretrain(
-        model, axial_train, coronal_train, device, epochs=args.pretrain_epochs
-    )
-    model = meta_train(
-        model, axial_train, coronal_train, device, meta_epochs=args.meta_epochs
-    )
-    model = finetune_l2sp(
-        model, sag_train, device, epochs=args.finetune_epochs, lam=args.lambda_val
+        model,
+        axial_train,
+        coronal_train,
+        device,
+        epochs=args.pretrain_epochs,
+        lr=args.pretrain_lr,
     )
 
-    f1_val = evaluate(model, sag_val, device)
-    print(f"\n⭐ Final Validation Sagittal F1: {f1_val:.4f}")
+    if not args.skip_meta:
+        model = meta_train(
+            model,
+            axial_train,
+            coronal_train,
+            device,
+            meta_epochs=args.meta_epochs,
+            meta_lr=args.meta_lr,
+            inner_lr=args.inner_lr,
+            inner_steps=args.inner_steps,
+            n_tasks=args.meta_tasks,
+            k_shot=args.k_shot,
+            q_query=args.q_query,
+        )
+    else:
+        print("\n[Step 2] Skipped meta-training by --skip_meta")
 
-    torch.save(
-        {
-            "model_state_dict": model.state_dict(),
-            "config": {"channels": 64, "modes": 12},
-        },
-        args.save_path,
+    meta_state = copy.deepcopy(model.state_dict())
+
+    if args.search_lambda:
+        train_idx, val_idx = stratified_split_indices(
+            sagittal_eval.labels, val_per_class=args.val_per_class, seed=args.seed
+        )
+        sagittal_train_split = MedSubset(sagittal_eval, train_idx, augment=True)
+        sagittal_val_split = MedSubset(sagittal_eval, val_idx, augment=False)
+        print(
+            f"\nSagittal split for lambda search: train={len(sagittal_train_split)}, val={len(sagittal_val_split)}"
+        )
+
+        lam, optimal_epoch = search_lambda(
+            meta_state,
+            axial_eval,
+            coronal_eval,
+            sagittal_train_split,
+            sagittal_val_split,
+            device,
+            channels=args.channels,
+            modes=args.modes,
+            finetune_epochs=max(30, args.finetune_epochs // 2),
+            finetune_lr=args.finetune_lr,
+            lambdas=parse_lambda_candidates(args.lambda_candidates),
+        )
+    else:
+        lam = args.lambda_val
+        optimal_epoch = args.finetune_epochs
+
+    print(
+        f"\n[Final Training] Fine-tune on all Sagittal shots for {optimal_epoch} Epochs (Early Stopped)"
     )
-    print(f"Model saved to {args.save_path}")
+    model = build_model(num_classes=11, channels=args.channels, modes=args.modes)
+    model.load_state_dict(meta_state)
+    model, _ = finetune_l2sp(
+        model,
+        sagittal_full_train,
+        device,
+        epochs=optimal_epoch,
+        lr=args.finetune_lr,
+        lam=lam,
+        val_datasets=None,
+    )
+
+    scores = evaluate_all(
+        model, axial_eval, coronal_eval, sagittal_eval, device, verbose=True
+    )
+
+    checkpoint = {
+        "model_state_dict": model.state_dict(),
+        "config": {"num_classes": 11, "channels": args.channels, "modes": args.modes},
+        "scores_on_train_domains": scores,
+        "selected_lambda": lam,
+        "early_stop_epoch": optimal_epoch,
+        "seed": args.seed,
+    }
+    torch.save(checkpoint, args.save_path)
+    print(f"\nModel saved to: {args.save_path}")
 
 
 if __name__ == "__main__":

@@ -547,7 +547,7 @@ def finetune_l2sp(
         sagittal_dataset,
         batch_size=batch_size,
         shuffle=True,
-        num_workers=0,
+        num_workers=4,
         drop_last=False,
     )
 
@@ -648,7 +648,7 @@ def evaluate(
 ) -> float:
     from sklearn.metrics import f1_score
 
-    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=0)
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=4)
     model.eval()
     model.to(device)
 

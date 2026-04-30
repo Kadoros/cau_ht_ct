@@ -128,8 +128,8 @@ class HybridFNONet(nn.Module):
         self.modes = modes
 
         self.lifting = nn.Sequential(
-            nn.Conv2d(1, channels, kernel_size=3, padding=1, bias=False),
-            _group_norm(channels),
+            nn.Conv2d(3, channels, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(channels),
             nn.GELU(),
         )
 
