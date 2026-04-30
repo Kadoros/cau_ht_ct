@@ -48,7 +48,9 @@ def train_dann_with_eval(
 ):
     print(f"\n[DANN Training] weight={dann_weight}, lr={lr}")
 
-    # grl = GradientReversalLayer() <-- 삭제됨
+    # [수정] GRL을 객체로 생성 (model_dann.py에 정의된 nn.Module 형태)
+    grl = GradientReversalLayer()
+
     optimizer = torch.optim.AdamW(
         list(model.parameters()) + list(discriminator.parameters()),
         lr=lr,
@@ -74,7 +76,7 @@ def train_dann_with_eval(
             optimizer.zero_grad(set_to_none=True)
             p = float(epoch * num_iters + i) / (epochs * num_iters)
 
-            # [수정됨] alpha 값을 변수로 계산
+            # alpha 값 업데이트
             alpha_val = 2.0 / (1.0 + np.exp(-10 * p)) - 1
 
             for d_idx, loader_iter in enumerate(loaders):
@@ -91,15 +93,14 @@ def train_dann_with_eval(
 
                 imgs, lbls = imgs.to(device), lbls.to(device)
 
-                logits, features = model(
-                    imgs, return_features=True
-                )  # model_dann.py에 return_features가 구현되어 있어야 함
+                # 모델 예측
+                logits, features = model(imgs, return_features=True)
                 cls_loss = criterion_cls(logits, lbls)
 
-                # [수정됨] 클래스에 직접 .apply 호출
-                domain_logits = discriminator(
-                    GradientReversalLayer.apply(features, alpha_val)
-                )
+                # [수정] GRL 객체를 텐서 연산처럼 호출! (apply가 아님)
+                reversed_features = grl(features, alpha_val)
+                domain_logits = discriminator(reversed_features)
+
                 domain_lbls = torch.full(
                     (imgs.size(0),), d_idx, dtype=torch.long, device=device
                 )
@@ -114,7 +115,7 @@ def train_dann_with_eval(
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
 
-        # 매 에포크마다 20% 분리된 검증셋으로 성능 체크
+        # 검증 로직
         if val_datasets is not None:
             scores = evaluate_all(model, *val_datasets, device=device, verbose=False)
             metric = scores["Final"]
