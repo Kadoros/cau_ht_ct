@@ -2,20 +2,13 @@
 train.py
 Few-shot domain generalization pipeline for the CAU medical-AI hackathon.
 
-Main fixes compared with the initial version:
-- Removed horizontal flip augmentation because the labels contain left/right organs.
-- Replaced the unsafe param.data based FOMAML implementation with functional_call.
-- Fixed episodic labels: tasks now keep the original 0~10 organ labels.
-- Added cross-view meta-tasks: A->C and C->A, which better matches view generalization.
-- Added stratified Sagittal validation for lambda search, then final training on all Sagittal shots.
-- Fixed lambda search model config mismatch.
-- Added layer-wise mean L2-SP regularization for safer few-shot adaptation.
-- Uses only PyTorch/torchvision/numpy/pandas/sklearn and Python standard library.
+Main fixes in this optimized version:
+- Fixed Data Normalization: Safe Instance Min-Max Scaling to prevent 16-bit CT distortion.
+- Fixed L2-SP Mathematical Error: Uses `.sum()` instead of `.mean()` to properly regularize layers.
+- Prevented Overfitting (1.000 F1 Issue): Automated Early Stopping. Final training stops exactly at the best epoch found during lambda search.
+- Cleaned up augmentation and cross-domain meta-tasks.
 
 Usage:
-  python train.py --train_dir ./train --save_path ./model.pth
-
-Recommended first run:
   python train.py --train_dir ./train --save_path ./model.pth --search_lambda
 """
 
@@ -50,10 +43,6 @@ from model_san1 import build_model
 class MedDataset(Dataset):
     """
     Loads PNG images + one-hot CSV label file.
-
-    CSV format:
-      Index,bladder,femur-left,femur-right,heart,kidney-left,kidney-right,liver,lung-left,lung-right,pancreas,spleen
-      image_00000,0,0,0,0,0,0,1,0,0,0,0
     """
 
     CLASS_NAMES = [
@@ -111,11 +100,14 @@ class MedDataset(Dataset):
                     align_corners=False,
                 ).squeeze(0)
 
-            # Most challenge PNGs are 8-bit. This branch is defensive for 16-bit PNGs.
-            max_val = float(img.max().item()) if img.numel() > 0 else 255.0
-            denom = 65535.0 if max_val > 255.0 else 255.0
-            img = img / denom
-            img = (img - 0.5) / 0.5  # [-1, 1]
+            # [핵심 수정] CT 영상용 안전한 Instance Min-Max Scaling
+            img_min, img_max = img.min(), img.max()
+            if img_max > img_min:
+                img = (img - img_min) / (img_max - img_min)
+            else:
+                img = torch.zeros_like(img)  # 완전 블랙 이미지 예외 처리
+
+            img = (img - 0.5) / 0.5  # [-1, 1] 로 스케일링
             imgs.append(img)
 
         self.imgs = torch.stack(imgs).contiguous()
@@ -137,12 +129,7 @@ class MedDataset(Dataset):
         return img, lbl
 
     def _augment(self, img: torch.Tensor) -> torch.Tensor:
-        """
-        Medical-image-safe augmentation for this label set.
-
-        Do NOT use horizontal flip here: femur/kidney/lung have left/right labels.
-        """
-        # Mild geometry. 28x28 images are tiny, so keep transforms conservative.
+        """Medical-image-safe augmentation. No horizontal flip."""
         if torch.rand(()) < 0.55:
             angle = (torch.rand(()).item() - 0.5) * 24.0  # ±12 degrees
             tx = int(torch.randint(-1, 2, ()).item())
@@ -152,7 +139,6 @@ class MedDataset(Dataset):
                 img, angle_deg=angle, translate_px=(tx, ty), scale=scale
             )
 
-        # Intensity robustness across patients/scanners.
         if torch.rand(()) < 0.65:
             alpha = 0.85 + torch.rand(()).item() * 0.30  # 0.85~1.15
             beta = (torch.rand(()).item() - 0.5) * 0.16  # -0.08~0.08
@@ -165,8 +151,6 @@ class MedDataset(Dataset):
 
 
 class MedSubset(Dataset):
-    """Subset wrapper that can turn augmentation on/off while preserving .labels."""
-
     def __init__(self, base: MedDataset, indices: Sequence[int], augment: bool = False):
         self.base = base
         self.indices = torch.as_tensor(indices, dtype=torch.long)
@@ -191,7 +175,6 @@ def _affine_tensor(
     translate_px: Tuple[int, int] = (0, 0),
     scale: float = 1.0,
 ) -> torch.Tensor:
-    """Apply a mild affine transform to a (1,H,W) tensor."""
     _, h, w = img.shape
     angle = math.radians(angle_deg)
     cos_a = math.cos(angle) / scale
@@ -200,9 +183,7 @@ def _affine_tensor(
     ty = 2.0 * translate_px[1] / max(h, 1)
 
     theta = torch.tensor(
-        [[cos_a, -sin_a, tx], [sin_a, cos_a, ty]],
-        dtype=img.dtype,
-        device=img.device,
+        [[cos_a, -sin_a, tx], [sin_a, cos_a, ty]], dtype=img.dtype, device=img.device
     )
     grid = F.affine_grid(
         theta.unsqueeze(0), img.unsqueeze(0).shape, align_corners=False
@@ -224,11 +205,9 @@ def load_domain(image_dir: str, label_csv: str, augment: bool = False) -> MedDat
 def stratified_split_indices(
     labels: torch.Tensor, val_per_class: int = 10, seed: int = 42
 ) -> Tuple[List[int], List[int]]:
-    """Return train/val indices with an equal validation count per class when possible."""
     rng = np.random.default_rng(seed)
     labels_np = labels.cpu().numpy()
-    train_idx: List[int] = []
-    val_idx: List[int] = []
+    train_idx, val_idx = [], []
     for cls in range(11):
         idx = np.where(labels_np == cls)[0]
         rng.shuffle(idx)
@@ -260,7 +239,12 @@ def pretrain(
 
     combined = torch.utils.data.ConcatDataset([axial_dataset, coronal_dataset])
     loader = DataLoader(
-        combined, batch_size=batch_size, shuffle=True, num_workers=0, drop_last=False
+        combined,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=4,
+        pin_memory=True,
+        drop_last=False,
     )
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
@@ -275,9 +259,7 @@ def pretrain(
 
     for epoch in range(epochs):
         model.train()
-        total_loss = 0.0
-        correct = 0
-        total = 0
+        total_loss, correct, total = 0.0, 0, 0
 
         for imgs, lbls in loader:
             imgs, lbls = imgs.to(device), lbls.to(device)
@@ -310,11 +292,9 @@ def pretrain(
 
 
 # ══════════════════════════════════════════════════════════
-# 2. FOMAML Meta-Learning on Source Domains
+# 2. FOMAML Meta-Learning
 # ══════════════════════════════════════════════════════════
 class TaskSampler:
-    """Samples N-way K-shot tasks from one dataset while keeping original labels."""
-
     def __init__(
         self, dataset: Dataset, n_way: int = 11, k_shot: int = 5, q_query: int = 10
     ):
@@ -325,9 +305,7 @@ class TaskSampler:
         self.class_indices = _build_class_indices(dataset.labels)
         self.classes = list(self.class_indices.keys())
 
-    def sample_task(
-        self, device: torch.device
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    def sample_task(self, device: torch.device):
         n = min(self.n_way, len(self.classes))
         chosen_classes = np.random.choice(self.classes, size=n, replace=False)
         support_imgs, support_lbls, query_imgs, query_lbls = [], [], [], []
@@ -350,13 +328,6 @@ class TaskSampler:
 
 
 class CrossDomainTaskSampler:
-    """
-    Samples support from one view and query from another view.
-
-    This better matches the challenge: learn from one plane, adapt/evaluate on a
-    different plane while preserving the same organ label semantics.
-    """
-
     def __init__(
         self,
         support_dataset: Dataset,
@@ -376,9 +347,7 @@ class CrossDomainTaskSampler:
             set(self.support_indices.keys()) & set(self.query_indices.keys())
         )
 
-    def sample_task(
-        self, device: torch.device
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    def sample_task(self, device: torch.device):
         n = min(self.n_way, len(self.classes))
         chosen_classes = np.random.choice(self.classes, size=n, replace=False)
         support_imgs, support_lbls, query_imgs, query_lbls = [], [], [], []
@@ -415,24 +384,18 @@ def _build_class_indices(labels: torch.Tensor) -> Dict[int, np.ndarray]:
     return out
 
 
-def _stack_task(
-    support_imgs: List[torch.Tensor],
-    support_lbls: List[int],
-    query_imgs: List[torch.Tensor],
-    query_lbls: List[int],
-    device: torch.device,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    s_imgs = torch.stack(support_imgs).to(device)
-    s_lbls = torch.tensor(support_lbls, dtype=torch.long, device=device)
-    q_imgs = torch.stack(query_imgs).to(device)
-    q_lbls = torch.tensor(query_lbls, dtype=torch.long, device=device)
-    return s_imgs, s_lbls, q_imgs, q_lbls
+def _stack_task(support_imgs, support_lbls, query_imgs, query_lbls, device):
+    return (
+        torch.stack(support_imgs).to(device),
+        torch.tensor(support_lbls, dtype=torch.long, device=device),
+        torch.stack(query_imgs).to(device),
+        torch.tensor(query_lbls, dtype=torch.long, device=device),
+    )
 
 
 def _forward_with_weights(
     model: nn.Module, x: torch.Tensor, weights: Dict[str, torch.Tensor]
 ) -> torch.Tensor:
-    """Functional forward pass with custom trainable parameters and original buffers."""
     buffers = dict(model.named_buffers())
     state = {**buffers, **weights}
     return functional_call(model, state, (x,))
@@ -446,13 +409,6 @@ def fomaml_step(
     inner_steps: int = 2,
     n_tasks: int = 4,
 ) -> float:
-    """
-    First-Order MAML update.
-
-    We compute query gradients with respect to adapted fast weights and copy those
-    first-order gradients to the original model parameters. No param.data hack is
-    used, so autograd remains valid.
-    """
     criterion = nn.CrossEntropyLoss(label_smoothing=0.02)
     meta_grads: Dict[str, torch.Tensor] = {
         name: torch.zeros_like(param, device=device)
@@ -463,7 +419,6 @@ def fomaml_step(
 
     for _ in range(n_tasks):
         s_imgs, s_lbls, q_imgs, q_lbls = task_sampler.sample_task(device)
-
         fast_weights: Dict[str, torch.Tensor] = {
             name: param.detach().clone().requires_grad_(True)
             for name, param in model.named_parameters()
@@ -526,7 +481,6 @@ def meta_train(
     q_query: int = 10,
 ) -> nn.Module:
     print("\n[Step 2] FOMAML meta-training on Axial + Coronal...")
-
     samplers = [
         CrossDomainTaskSampler(
             axial_dataset, coronal_dataset, n_way=11, k_shot=k_shot, q_query=q_query
@@ -582,8 +536,8 @@ def finetune_l2sp(
     lam: float = 0.05,
     val_datasets: Optional[Tuple[Dataset, Dataset, Dataset]] = None,
     eval_every: int = 5,
-) -> nn.Module:
-    """Fine-tune on Sagittal with layer-wise mean L2-SP regularization."""
+) -> Tuple[nn.Module, int]:
+    """Fine-tune on Sagittal and return (model, best_epoch)."""
     print(f"\n[Step 3] Fine-tuning on Sagittal with L2-SP (λ={lam:.4f})...")
 
     theta_meta = {
@@ -606,6 +560,7 @@ def finetune_l2sp(
     model.to(device)
     best_state = copy.deepcopy(model.state_dict())
     best_metric = -float("inf") if val_datasets is not None else float("inf")
+    best_epoch = 1
 
     for epoch in range(epochs):
         model.train()
@@ -639,31 +594,31 @@ def finetune_l2sp(
             if metric > best_metric:
                 best_metric = metric
                 best_state = copy.deepcopy(model.state_dict())
+                best_epoch = epoch + 1
         elif val_datasets is None:
-            # Final full-shot training has no validation split; use train loss only.
             if avg_loss < best_metric:
                 best_metric = avg_loss
                 best_state = copy.deepcopy(model.state_dict())
+                best_epoch = epoch + 1
 
         if (epoch + 1) % 10 == 0 or epoch == 0:
-            if val_datasets is not None:
-                print(
-                    f"  FT Epoch [{epoch+1:3d}/{epochs}] loss={avg_loss:.4f} acc={acc:.1f}% best_val={best_metric:.4f}"
-                )
-            else:
-                print(
-                    f"  FT Epoch [{epoch+1:3d}/{epochs}] loss={avg_loss:.4f} acc={acc:.1f}%"
-                )
+            val_info = (
+                f" best_val={best_metric:.4f}" if val_datasets is not None else ""
+            )
+            print(
+                f"  FT Epoch [{epoch+1:3d}/{epochs}] loss={avg_loss:.4f} acc={acc:.1f}%{val_info}"
+            )
 
     model.load_state_dict(best_state)
-    print(f"  Fine-tuning done. Best metric: {best_metric:.4f}")
-    return model
+    print(f"  Fine-tuning done. Best metric: {best_metric:.4f} at Epoch {best_epoch}")
+    return model, best_epoch
 
 
 def _l2sp_layer_weight(name: str) -> float:
-    """Stronger anchor on early/shared encoder, weaker anchor on classifier."""
     if name.startswith("classifier"):
         return 0.10
+    if name.startswith("feature_expand"):
+        return 0.20
     if name.startswith("spatial_refine"):
         return 0.35
     if name.startswith("fno2"):
@@ -674,13 +629,14 @@ def _l2sp_layer_weight(name: str) -> float:
 def l2sp_penalty(
     model: nn.Module, theta_meta: Dict[str, torch.Tensor], device: torch.device
 ) -> torch.Tensor:
-    """Layer-wise mean L2-SP penalty. Mean reduction keeps λ numerically stable."""
+    """[핵심 수정] 수학적으로 올바른 Layer-wise SUM L2-SP penalty"""
     penalty = torch.zeros((), device=device)
     for name, param in model.named_parameters():
         if name not in theta_meta:
             continue
         anchor = theta_meta[name].to(device)
-        penalty = penalty + _l2sp_layer_weight(name) * (param - anchor).pow(2).mean()
+        # mean()이 아닌 sum()을 써야 모델 파라미터 수에 따른 페널티 왜곡이 발생하지 않습니다.
+        penalty = penalty + _l2sp_layer_weight(name) * torch.sum((param - anchor) ** 2)
     return penalty
 
 
@@ -696,8 +652,7 @@ def evaluate(
     model.eval()
     model.to(device)
 
-    all_preds: List[int] = []
-    all_lbls: List[int] = []
+    all_preds, all_lbls = [], []
     with torch.no_grad():
         for imgs, lbls in loader:
             imgs = imgs.to(device)
@@ -756,16 +711,23 @@ def search_lambda(
     modes: int,
     finetune_epochs: int,
     finetune_lr: float,
-    lambdas: Sequence[float] = (0.01, 0.03, 0.05, 0.1, 0.2),
-) -> float:
+    lambdas: Sequence[float] = (
+        0.0001,
+        0.0005,
+        0.001,
+        0.005,
+    ),  # [수정] sum() 페널티에 맞춘 스케일
+) -> Tuple[float, int]:
     print("\n[Lambda Search on stratified Sagittal validation]")
     best_lam = float(lambdas[0])
     best_score = -float("inf")
+    best_epoch_to_use = 40  # 기본값
 
     for lam in lambdas:
         model = build_model(num_classes=11, channels=channels, modes=modes)
         model.load_state_dict(copy.deepcopy(model_init_state))
-        model = finetune_l2sp(
+
+        model, best_epoch = finetune_l2sp(
             model,
             sagittal_train,
             device,
@@ -775,16 +737,21 @@ def search_lambda(
             val_datasets=(axial_eval, coronal_eval, sagittal_val),
             eval_every=5,
         )
+
         scores = evaluate_all(
             model, axial_eval, coronal_eval, sagittal_val, device, verbose=True
         )
-        print(f"  λ={float(lam):.4f}  Val Final={scores['Final']:.4f}")
         if scores["Final"] > best_score:
             best_score = scores["Final"]
             best_lam = float(lam)
+            best_epoch_to_use = (
+                best_epoch  # [핵심 수정] 오버피팅을 방지하기 위한 정지 지점 기록
+            )
 
-    print(f"  Best λ = {best_lam:.4f}  (Val Final={best_score:.4f})")
-    return best_lam
+    print(
+        f"  Best λ = {best_lam:.4f} at Epoch {best_epoch_to_use} (Val Final={best_score:.4f})"
+    )
+    return best_lam, best_epoch_to_use
 
 
 # ══════════════════════════════════════════════════════════
@@ -794,11 +761,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Few-Shot Domain Generalization Training"
     )
-    parser.add_argument(
-        "--train_dir",
-        required=True,
-        help="Root train dir containing axial/, coronal/, sagittal/, label/",
-    )
+    parser.add_argument("--train_dir", required=True, help="Root train dir")
     parser.add_argument("--save_path", default="./model.pth", help="Output model path")
 
     if torch.cuda.is_available():
@@ -822,23 +785,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--meta_tasks", type=int, default=4)
     parser.add_argument("--k_shot", type=int, default=5)
     parser.add_argument("--q_query", type=int, default=10)
-    parser.add_argument(
-        "--skip_meta",
-        action="store_true",
-        help="Skip FOMAML if you need a faster ablation",
-    )
+    parser.add_argument("--skip_meta", action="store_true", help="Skip FOMAML")
 
     parser.add_argument("--finetune_epochs", type=int, default=160)
     parser.add_argument("--finetune_lr", type=float, default=2e-4)
+    parser.add_argument("--lambda_val", type=float, default=0.001)
     parser.add_argument(
-        "--lambda_val", type=float, default=0.05, help="L2-SP regularization weight"
+        "--search_lambda", action="store_true", help="Run lambda grid search"
     )
-    parser.add_argument(
-        "--search_lambda",
-        action="store_true",
-        help="Run lambda grid search using stratified Sagittal validation",
-    )
-    parser.add_argument("--lambda_candidates", default="0.01,0.03,0.05,0.1,0.2")
+    parser.add_argument("--lambda_candidates", default="0.0001,0.0005,0.001,0.005")
     parser.add_argument("--val_per_class", type=int, default=10)
     return parser.parse_args()
 
@@ -927,7 +882,6 @@ def main() -> None:
 
     meta_state = copy.deepcopy(model.state_dict())
 
-    lam = args.lambda_val
     if args.search_lambda:
         train_idx, val_idx = stratified_split_indices(
             sagittal_eval.labels, val_per_class=args.val_per_class, seed=args.seed
@@ -937,7 +891,8 @@ def main() -> None:
         print(
             f"\nSagittal split for lambda search: train={len(sagittal_train_split)}, val={len(sagittal_val_split)}"
         )
-        lam = search_lambda(
+
+        lam, optimal_epoch = search_lambda(
             meta_state,
             axial_eval,
             coronal_eval,
@@ -950,15 +905,20 @@ def main() -> None:
             finetune_lr=args.finetune_lr,
             lambdas=parse_lambda_candidates(args.lambda_candidates),
         )
+    else:
+        lam = args.lambda_val
+        optimal_epoch = args.finetune_epochs
 
-    print("\n[Final Training] Fine-tune on all Sagittal shots with selected λ")
+    print(
+        f"\n[Final Training] Fine-tune on all Sagittal shots for {optimal_epoch} Epochs (Early Stopped)"
+    )
     model = build_model(num_classes=11, channels=args.channels, modes=args.modes)
     model.load_state_dict(meta_state)
-    model = finetune_l2sp(
+    model, _ = finetune_l2sp(
         model,
         sagittal_full_train,
         device,
-        epochs=args.finetune_epochs,
+        epochs=optimal_epoch,  # [핵심 수정] 무작정 160번 도는 것 방지
         lr=args.finetune_lr,
         lam=lam,
         val_datasets=None,
@@ -970,13 +930,10 @@ def main() -> None:
 
     checkpoint = {
         "model_state_dict": model.state_dict(),
-        "config": {
-            "num_classes": 11,
-            "channels": args.channels,
-            "modes": args.modes,
-        },
+        "config": {"num_classes": 11, "channels": args.channels, "modes": args.modes},
         "scores_on_train_domains": scores,
         "selected_lambda": lam,
+        "early_stop_epoch": optimal_epoch,
         "seed": args.seed,
     }
     torch.save(checkpoint, args.save_path)
