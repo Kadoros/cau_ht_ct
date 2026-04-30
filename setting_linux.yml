@@ -1,23 +1,13 @@
 name: CT
 channels:
   - pytorch
-  - nvidia      # CUDA 지원을 위해 추가
   - conda-forge
   - defaults
 dependencies:
   - python=3.10
-  # PINO-4DGS 연구용이므로 리눅스 서버에 맞는 CUDA 11.8 또는 12.1 버전의 PyTorch를 설치하도록 유도
   - pytorch=2.1.2
   - torchvision=0.16.2
-  - pytorch-cuda=12.1  # 서버의 CUDA 버전에 맞춰 11.8로 변경 가능
-  - numpy=1.26.4
-  - pandas=2.3.3
-  - scikit-learn=1.7.2
-  - scipy=1.15.2
-  - pillow=12.2.0
-  - nibabel=5.4.0  # CT/의료영상용
-  - ffmpeg=8.0.1
-  - sympy=1.14.0
-  - networkx=3.4.2
-  - openvino
-  - pip
+  - numpy<2
+  - pandas
+  - scikit-learn
+  - nibabel
