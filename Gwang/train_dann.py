@@ -48,7 +48,7 @@ def train_dann_with_eval(
 ):
     print(f"\n[DANN Training] weight={dann_weight}, lr={lr}")
 
-    grl = GradientReversalLayer()
+    # grl = GradientReversalLayer() <-- 삭제됨
     optimizer = torch.optim.AdamW(
         list(model.parameters()) + list(discriminator.parameters()),
         lr=lr,
@@ -65,7 +65,6 @@ def train_dann_with_eval(
         model.train()
         discriminator.train()
 
-        # S 도메인 데이터가 적으므로, S 데이터 길이에 맞춰 1 Epoch를 정의 (과적합 방지)
         num_iters = len(s_loader)
         loaders = [iter(a_loader), iter(c_loader), iter(s_loader)]
 
@@ -74,13 +73,14 @@ def train_dann_with_eval(
         for i in range(num_iters):
             optimizer.zero_grad(set_to_none=True)
             p = float(epoch * num_iters + i) / (epochs * num_iters)
-            grl.alpha = 2.0 / (1.0 + np.exp(-10 * p)) - 1
+
+            # [수정됨] alpha 값을 변수로 계산
+            alpha_val = 2.0 / (1.0 + np.exp(-10 * p)) - 1
 
             for d_idx, loader_iter in enumerate(loaders):
                 try:
                     imgs, lbls = next(loader_iter)
                 except StopIteration:
-                    # 데이터가 모자라면 로더를 다시 초기화
                     if d_idx == 0:
                         loaders[0] = iter(a_loader)
                     elif d_idx == 1:
@@ -91,19 +91,20 @@ def train_dann_with_eval(
 
                 imgs, lbls = imgs.to(device), lbls.to(device)
 
-                # 1. Classification (Source 도메인(A,C)과 Target 도메인(S) 모두 사용)
-                # 단, 원본 논문에서는 S 도메인 라벨을 안 쓰지만, 해커톤은 퓨샷 파인튜닝이므로 S 라벨도 사용
-                logits, features = model(imgs, return_features=True)
+                logits, features = model(
+                    imgs, return_features=True
+                )  # model_dann.py에 return_features가 구현되어 있어야 함
                 cls_loss = criterion_cls(logits, lbls)
 
-                # 2. Domain Classification (0: Axial, 1: Coronal, 2: Sagittal)
-                domain_logits = discriminator(grl.apply(features, grl.alpha))
+                # [수정됨] 클래스에 직접 .apply 호출
+                domain_logits = discriminator(
+                    GradientReversalLayer.apply(features, alpha_val)
+                )
                 domain_lbls = torch.full(
                     (imgs.size(0),), d_idx, dtype=torch.long, device=device
                 )
                 domain_loss = criterion_domain(domain_logits, domain_lbls)
 
-                # Loss 역전파 (배치마다 누적)
                 loss = cls_loss + dann_weight * domain_loss
                 loss.backward()
 
@@ -124,12 +125,12 @@ def train_dann_with_eval(
 
             if (epoch + 1) % 5 == 0 or epoch == 0:
                 print(
-                    f"  Epoch [{epoch+1:2d}/{epochs}] Cls: {total_cls_loss/num_iters:.3f}, Dom: {total_dom_loss/num_iters:.3f}, Alpha: {grl.alpha:.3f} | best_val={best_metric:.4f}"
+                    f"  Epoch [{epoch+1:2d}/{epochs}] Cls: {total_cls_loss/num_iters:.3f}, Dom: {total_dom_loss/num_iters:.3f}, Alpha: {alpha_val:.3f} | best_val={best_metric:.4f}"
                 )
         else:
             if (epoch + 1) % 5 == 0 or epoch == 0:
                 print(
-                    f"  Epoch [{epoch+1:2d}/{epochs}] Cls: {total_cls_loss/num_iters:.3f}, Dom: {total_dom_loss/num_iters:.3f}, Alpha: {grl.alpha:.3f}"
+                    f"  Epoch [{epoch+1:2d}/{epochs}] Cls: {total_cls_loss/num_iters:.3f}, Dom: {total_dom_loss/num_iters:.3f}, Alpha: {alpha_val:.3f}"
                 )
 
     if val_datasets is not None:
